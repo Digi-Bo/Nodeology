@@ -1,0 +1,164 @@
+# Copyright (c) 2024, UChicago Argonne, LLC. All rights reserved.
+
+# Copyright 2024. UChicago Argonne, LLC. This software was produced
+# under U.S. Government contract DE-AC02-06CH11357 for Argonne National
+# Laboratory (ANL), which is operated by UChicago Argonne, LLC for the
+# U.S. Department of Energy. The U.S. Government has rights to use,
+# reproduce, and distribute this software.  NEITHER THE GOVERNMENT NOR
+# UChicago Argonne, LLC MAKES ANY WARRANTY, EXPRESS OR IMPLIED, OR
+# ASSUMES ANY LIABILITY FOR THE USE OF THIS SOFTWARE.  If software is
+# modified to produce derivative works, such modified software should
+# be clearly marked, so as not to confuse it with the version available
+# from ANL.
+
+# Additionally, redistribution and use in source and binary forms, with
+# or without modification, are permitted provided that the following
+# conditions are met:
+
+#     * Redistributions of source code must retain the above copyright
+#       notice, this list of conditions and the following disclaimer.
+
+#     * Redistributions in binary form must reproduce the above copyright
+#       notice, this list of conditions and the following disclaimer in
+#       the documentation and/or other materials provided with the
+#       distribution.
+
+#     * Neither the name of UChicago Argonne, LLC, Argonne National
+#       Laboratory, ANL, the U.S. Government, nor the names of its
+#       contributors may be used to endorse or promote products derived
+#       from this software without specific prior written permission.
+
+# THIS SOFTWARE IS PROVIDED BY UChicago Argonne, LLC AND CONTRIBUTORS
+# "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+# LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+# FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL UChicago
+# Argonne, LLC OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+# INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+# BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+# LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+# LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+# ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.
+
+### Initial Author <2024>: Xiangyu Yin
+
+### This is a demo of simplified PEAR workflow at automation level 2 for parameter optimization of Ptychography.
+### "PEAR: A Robust and Flexible Automation Framework for Ptychography Enabled by Multiple Large Language Model Agents"
+### https://arxiv.org/abs/2410.09034
+
+name: ptycho_opt
+
+# Define state types needed for the workflow
+state_defs:
+  - HilpState
+  - ParamsOptState
+  - CodingState
+  - RecommendationState
+  - DiagnosisState
+
+# LLM configuration
+llm: gpt-4o-mini
+
+# Exit commands
+exit_commands:
+  - "stop pear"
+  - "quit pear"
+  - "terminate pear"
+
+# Node definitions
+nodes:
+  params_collector:
+    type: survey
+    next:
+      condition: "end_conversation"
+      then: params_formatter
+      else: params_collector_input
+
+  params_collector_input:
+    type: user_input
+    next: params_collector
+
+  params_formatter:
+    type: formatter
+    kwargs:
+      source: conversation_summary
+    next: params_recommender
+
+  params_recommender:
+    type: recommender
+    kwargs:
+      source: conversation_summary
+    next: params_updater
+
+  params_updater:
+    type: updater
+    kwargs:
+      source: recommendation
+    next: params_confirmer
+
+  params_confirmer:
+    type: updater
+    kwargs:
+      source: human_input
+    next:
+      condition: "end_conversation"
+      then: script_generator
+      else: params_confirmer_input
+
+  params_confirmer_input:
+    type: user_input
+    next: params_confirmer
+
+  script_generator:
+    type: code_rewriter
+    kwargs:
+      source: 
+        context: params_desc
+    next: script_runner
+
+  script_runner:
+    type: execute_code
+    kwargs:
+      executable_path: ${executable_path}
+      capture_output_func: ${capture_output_func}
+    next: quality_commentator
+
+  quality_commentator:
+    type: commentator
+    kwargs:
+      result2image_convert_func: ${result2image_convert_func}
+    next: updates_recommender
+
+  updates_recommender:
+    type: recommender
+    kwargs:
+      source: diagnosis
+    next: params_updater
+
+# Entry point
+entry_point: params_collector
+
+# Interrupt points
+intervene_before:
+  - params_collector_input
+  - params_confirmer_input
+
+# # Usage
+# # Create workflow
+# workflow = load_workflow_from_template(
+#     "examples/pear/pear_demo.yaml",
+#     executable_path=executable_path,
+#     capture_output_func=capture_output_func,
+#     result2image_convert_func=result2image_convert_func
+# )
+
+# # Initialize state
+# workflow.initialize({
+#     "data_path": data_path,
+#     "params_desc": params_desc,
+#     "params_questions": params_questions,
+#     "recommender_knowledge": recommender_knowledge,
+#     "code_example": example_recon_script,
+#     "example_diagnosis": example_recon_qualities
+# })

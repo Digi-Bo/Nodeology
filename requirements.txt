@@ -1,0 +1,8 @@
+requests
+pytest
+pyyaml
+typing-extensions
+openai
+langgraph
+marker-pdf
+r2r
