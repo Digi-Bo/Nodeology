@@ -3,7 +3,7 @@
   <h3></h3>
 </div>
 
-`nodeology` is a Python framework that leverages AI agents to supercharge scientific research. Built on `langgraph`, it enables researchers to quickly develop, test, adapt and run agentic workflows. By combining the power of foundational AI with graph-based workflow, Nodeology has the potential to transform complex research tasks into streamlined, AI-enhanced processes. Some potential applications are:
+`nodeology` is an experimental framework that leverages foundational AI agents to supercharge scientific research. Built on `langgraph`, it enables researchers to quickly develop, test, adapt and run agentic workflows. By combining the power of foundational AI with graph-based workflow, Nodeology has the potential to transform complex research tasks into streamlined, AI-enhanced processes. Some potential applications are:
 - Automate parameter optimization
 - Generate and validate hypotheses
 - Extract insights from research paper
@@ -196,3 +196,15 @@ results = workflow.run({'data_path': 'experiments/data/'})
 ## 🔬 Featured Applications
 
 * [PEAR: A Robust and Flexible Automation Framework for Ptychography Enabled by Multiple Large Language Model Agents.](https://arxiv.org/abs/2410.09034) You can check a demo implementation in the example folder.
+
+
+## 👥 Contributing & Collaboration
+
+We welcome contributions and collaborations from the community! Whether you want to:
+- Report bugs or suggest features
+- Submit pull requests
+- Explore research collaborations
+- Share your use cases and feedback
+
+Please feel free to reach out via email at [xyin@anl.gov]
+
