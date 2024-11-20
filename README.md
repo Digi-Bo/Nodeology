@@ -33,13 +33,15 @@ Define your workflow state with type hints:
 from nodeology.state import State
 from typing import Dict, List, Union
 
-class ExperimentState(State):
-    # Core experimental data
+class DataProcessingState(State):
     data_path: str
+    result_path: str
     params_desc: str
     params: Dict[str, Union[float, str, int, bool]]
     quality: str
     quality_history: List[str]
+    previous_results: List[str]
+    next_steps: str
 ```
 
 Pre-built states are available for common scenarios:
@@ -60,10 +62,10 @@ from nodeology.prebuilt import (
 from nodeology.node import Node
 
 analyzer = Node(
-    name="experiment_analyzer",
+    name="experiment_data_analyzer",
     prompt_template="""
     Analyze experiment data and suggest next steps:
-    Data: {data}
+    Data: {data_path}
     Previous Results: {previous_results}
     """,
     sink="next_steps",
@@ -72,11 +74,11 @@ analyzer = Node(
 
 **Function-Based Nodes**: transform conventional `python` functions
 ```python
-@as_node(name="data_processor", sink=["processed_data", "metrics"])
-def process_experiment_data(raw_data: List[float], 
-                            parameters: Dict[str, float]) -> tuple:
+@as_node(name="processor", sink=["result_path", "quality"])
+def process_experiment_data():
     # Your processing logic here
-    return processed_data, metrics
+    # You will have access to state variables (e.g. state["data_path"])
+    return result_path, quality
 ```
 
 **Pre-built Research Nodes**: reusable components in scientific workflows
@@ -123,15 +125,16 @@ class ResearchWorkflow(Workflow):
         self.workflow = StateGraph(self.state_schema)
 
         self.workflow.add_node("design", code_designer)
-        self.workflow.add_node("optimize", params_optimizer)
-        self.workflow.add_node("analyze", experiment_analyzer)
+        self.workflow.add_node("process", processor)
+        self.workflow.add_node("analyze", analyzer)
         
-        self.workflow.add_edge("analyze", "design")
+        self.workflow.add_edge("design", "process")
         self.workflow.add_conditional_edges(
-            "optimize",
+            "process",
             condition=lambda state: state["quality"] > 0.95,
             destinations={"true": END, "false": "analyze"}  
         ) 
+        self.workflow.add_edge("analyze", "design")
         
         self.workflow.set_entry_point("design")
         self.graph = self.workflow.compile(checkpointer=MemorySaver())
@@ -139,8 +142,8 @@ class ResearchWorkflow(Workflow):
 After defining the workflow, simply
 ```python
 my_workflow = ResearchWorkflow(
-    name="test_workflow",
-    state_defs=CustomResearchState,
+    name="data_processing_workflow",
+    state_defs=DataProcessingState,
     llm_name="gpt-4o",
     vlm_name="gpt-4o",
     exit_commands=["quit now"],
@@ -150,32 +153,34 @@ my_workflow.run({'data_path':'my_data_path', 'params_desc':'parameter context'})
 
 **YAML Template**: Alternatively you can use the template system
 ```yaml
-name: research_workflow
+name: data_processing_workflow
 state_defs:
-  - data_path: str
-  - params_desc: str
-  - params: Dict[str, Union[float, str, int, bool]]
-  - quality: float
-  - quality_history: List[float]
-  - next_steps: str
+  - [data_path, str]
+  - [result_path, str]
+  - [params_desc, str]
+  - [params, "Dict[str, Union[float, str, int, bool]]"]
+  - [quality, float]
+  - [quality_history, "List[float]"]
+  - [previous_results, "List[str]"]
+  - [next_steps, str]
 
 nodes:
   design:
     type: code_designer
-    next: optimize
+    next: process
 
-  optimize:
-    type: params_optimizer
+  process:
+    type: processor
     next:
       condition: "state['quality'] > 0.95"
       then: END
       else: analyze
 
   analyze:
-    type: experiment_analyzer
+    type: analyzer
     template: |
       Analyze ${experiment_type} experiment data and suggest next steps:
-      Data: {data}
+      Data: {data_path}
       Previous Results: {previous_results}
     sink: next_steps
     next: design
@@ -188,9 +193,10 @@ from nodeology.workflow import load_workflow_from_template
 
 workflow = load_workflow_from_template(
     "path/to/research_workflow.yaml",
+    custom_nodes={'processor': process_experiment_data}
     experiment_type="XRF"  
 )
-results = workflow.run({'data_path': 'experiments/data/'})
+results = workflow.run({'data_path':'my_data_path', 'params_desc':'parameter context'})
 ```
 
 ## 🔬 Featured Applications
