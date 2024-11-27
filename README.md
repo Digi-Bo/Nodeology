@@ -47,11 +47,14 @@ class DataProcessingState(State):
 Pre-built states are available for common scenarios:
 ```python
 from nodeology.prebuilt import (
-    ComputationalTaskState,  # For computational tasks
-    ParamsOptState,          # For parameter optimization
     HilpState,               # For human-in-the-loop processes
+    CodingState,             # For coding tasks
+    ParamsOptState,          # For parameter optimization
+    RecommendationState,     # For recommendation tasks
     KnowledgeState,          # For knowledge extraction
-    RAGState                 # For retrieval-augmented generation
+    RAGState,                # For retrieval-augmented generation
+    PlanningState,           # For planning tasks
+    DiagnosisState           # For diagnostic processes
 )
 ```
 
@@ -85,36 +88,36 @@ def process_experiment_data():
 ```python
 from nodeology.prebuilt import (
     # From reasoning.py
-    "planner": planner,
+    planner,
     # From coding.py
-    "code_executor": execute_code,
-    "code_rewriter": code_rewriter,
-    "error_corrector": error_corrector,
-    "code_tweaker": code_tweaker,
-    "code_explainer": code_explainer,
-    "code_designer": code_designer,
+    execute_code,
+    code_rewriter,
+    error_corrector,
+    code_tweaker,
+    code_explainer,
+    code_designer,
     # From knowledge.py
-    "pdf2md_converter": pdf2md,
-    "content_summarizer": content_summarizer,
-    "attributes_extractor": attributes_extractor,
-    "effect_analyzer": effect_analyzer,
-    "questions_generator": questions_generator,
-    "log_summarizer": log_summarizer,
-    "insights_extractor": insights_extractor,
-    "context_searcher": context_retriever,
-    "rag_generator": context_augmented_generator,
+    pdf2md,
+    content_summarizer,
+    attributes_extractor,
+    effect_analyzer,
+    questions_generator,
+    log_summarizer,
+    insights_extractor,
+    context_retriever,
+    context_augmented_generator,
     # From params.py
-    "formatter": formatter,
-    "recommender": recommender,
-    "updater": updater,
+    formatter,
+    recommender,
+    updater,
     # From hilp.py
-    "conversation_summarizer": conversation_summarizer,
-    "survey": survey,
+    conversation_summarizer,
+    survey,
     # From diagnosis.py
-    "commentator": commentator,
+    commentator
 )
 ```
-You can customize those prebuilt nodes using `source` keyword arguments.
+You can customize these prebuilt nodes using `source` keyword arguments.
 
 ### 🔄 Building Workflows
 
@@ -177,7 +180,7 @@ nodes:
       else: analyze
 
   analyze:
-    type: analyzer
+    type: prompt
     template: |
       Analyze ${experiment_type} experiment data and suggest next steps:
       Data: {data_path}
