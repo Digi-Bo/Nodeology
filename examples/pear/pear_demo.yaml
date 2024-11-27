@@ -66,6 +66,11 @@ exit_commands:
   - "quit pear"
   - "terminate pear"
 
+# Interrupt points (nodes that need human input)
+intervene_before:
+  - params_collector
+  - params_confirmer
+
 # Node definitions
 nodes:
   params_collector:
@@ -73,11 +78,7 @@ nodes:
     next:
       condition: "end_conversation"
       then: params_formatter
-      else: params_collector_input
-
-  params_collector_input:
-    type: user_input
-    next: params_collector
+      else: params_collector
 
   params_formatter:
     type: formatter
@@ -104,16 +105,12 @@ nodes:
     next:
       condition: "end_conversation"
       then: script_generator
-      else: params_confirmer_input
-
-  params_confirmer_input:
-    type: user_input
-    next: params_confirmer
+      else: params_confirmer
 
   script_generator:
     type: code_rewriter
     kwargs:
-      source: 
+      source:
         context: params_desc
     next: script_runner
 
@@ -138,22 +135,13 @@ nodes:
 
 # Entry point
 entry_point: params_collector
-
-# Interrupt points
-intervene_before:
-  - params_collector_input
-  - params_confirmer_input
-
 # # Usage
-# # Create workflow
 # workflow = load_workflow_from_template(
 #     "examples/pear/pear_demo.yaml",
 #     executable_path=executable_path,
 #     capture_output_func=capture_output_func,
 #     result2image_convert_func=result2image_convert_func
 # )
-
-# # Initialize state
 # workflow.initialize({
 #     "data_path": data_path,
 #     "params_desc": params_desc,
