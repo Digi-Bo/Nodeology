@@ -80,7 +80,7 @@ class RAGState(State):
     rag_response: str
 
 
-@as_node(name="pdf2md_converter", sink=["paper_text", "images"])
+@as_node(sink=["paper_text", "images"])
 def pdf2md(file_name, file_path, output_dir, api_key=DATALAB_API_KEY):
     # Check if the file has already been processed
     markdown_file = os.path.join(output_dir, f"{os.path.splitext(file_name)[0]}.md")
@@ -182,7 +182,7 @@ def pdf2md(file_name, file_path, output_dir, api_key=DATALAB_API_KEY):
 
 
 content_summarizer = Node(
-    name="content_summarizer",
+    node_type="content_summarizer",
     prompt_template="""# INPUT TEXT:
 {paper_text}
 
@@ -211,7 +211,7 @@ content_summarizer.pre_process = content_summarizer_pre_process
 
 # Attributes Extractor Template
 attributes_extractor = Node(
-    name="attributes_extractor",
+    node_type="attributes_extractor",
     prompt_template="""# INPUT TEXT:
 {paper_text}
 
@@ -249,7 +249,7 @@ attributes_extractor.post_process = attributes_extractor_post_process
 
 # Effect Analyzer Template
 effect_analyzer = Node(
-    name="effect_analyzer",
+    node_type="effect_analyzer",
     prompt_template="""# INPUT TEXT:
 {paper_text}
 
@@ -290,7 +290,7 @@ effect_analyzer.post_process = effect_analyzer_post_process
 
 # Questions Generator Template
 questions_generator = Node(
-    name="questions_generator",
+    node_type="questions_generator",
     prompt_template="""# ATTRIBUTES DESCRIPTIONS:
 {attributes_desc}
 
@@ -342,7 +342,7 @@ questions_generator.post_process = questions_generator_post_process
 
 # Log Summarizer Template
 log_summarizer = Node(
-    name="log_summarizer",
+    node_type="log_summarizer",
     prompt_template="""# LOG TEXT:
 {log}
 
@@ -369,7 +369,7 @@ log_summarizer.pre_process = log_summarizer_pre_process
 
 # Insights Extractor Template
 insights_extractor = Node(
-    name="insights_extractor",
+    node_type="insights_extractor",
     prompt_template="""# INPUT DATA:
 {log_summary}
 
@@ -400,7 +400,7 @@ Answers should be concise but include specific values where relevant."""
 insights_extractor.pre_process = insights_extractor_pre_process
 
 
-@as_node(name="context_searcher", sink=["context"])
+@as_node(sink=["context"])
 def context_retriever(
     query: Annotated[str, "Search query"],
     r2r_client: Annotated[R2R_Client, "R2R client instance"],
@@ -419,7 +419,7 @@ def context_retriever(
     return results
 
 
-@as_node(name="rag_generator", sink=["rag_response", "context"])
+@as_node(sink=["rag_response", "context"])
 def context_augmented_generator(
     query: Annotated[str | list, "Query text or conversation history"],
     r2r_client: Annotated[R2R_Client, "R2R client instance"],

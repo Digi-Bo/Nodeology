@@ -68,7 +68,7 @@ class RecommendationState(State):
 
 # Formatter Template
 formatter = Node(
-    name="formatter",
+    node_type="formatter",
     prompt_template="""# PARAMS DESCRIPTION: 
 {params_desc}
 
@@ -108,7 +108,7 @@ formatter.post_process = formatter_post_process
 
 # Recommender Template
 recommender = Node(
-    name="recommender",
+    node_type="recommender",
     prompt_template="""# RECOMMENDER KNOWLEDGE:
 {recommender_knowledge}
 
@@ -139,7 +139,7 @@ recommender.post_process = recommender_post_process
 
 # Updater Template
 updater = Node(
-    name="updater",
+    node_type="updater",
     prompt_template="""# PARAMS DESCRIPTION:
 {params_desc}
 

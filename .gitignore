@@ -163,3 +163,7 @@ cython_debug/
 
 # Apple
 .DS_Store
+
+# Nodeology
+artifacts/
+logs/

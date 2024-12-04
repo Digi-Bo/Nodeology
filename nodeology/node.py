@@ -49,10 +49,31 @@ import os
 from string import Formatter
 from inspect import signature
 from typing import Optional, Annotated, List, Union, Dict, Callable, Any
+import ast
+import re
 
 from nodeology.state import State
 from nodeology.log import log_print_color
 from nodeology.client import LLM_Client, VLM_Client
+
+
+def _process_state_with_transforms(
+    state: State, transforms: Dict[str, Callable], client: LLM_Client, **kwargs
+) -> State:
+    """Helper function to apply transforms to state values.
+
+    Args:
+        state: Current state
+        transforms: Dictionary mapping state keys to transformation functions
+        client: LLM client (unused but kept for signature compatibility)
+    """
+    for key, transform in transforms.items():
+        if key in state:
+            try:
+                state[key] = transform(state[key])
+            except Exception as e:
+                raise ValueError(f"Error applying transform to {key}: {str(e)}")
+    return state
 
 
 class Node:
@@ -66,9 +87,9 @@ class Node:
     - Format and validate outputs
 
     Args:
-        name (str): Unique identifier for the node
-        prompt_template (str): Template string for the LLM prompt. Uses Python string formatting 
+        prompt_template (str): Template string for the LLM prompt. Uses Python string formatting
             syntax (e.g., "{variable}"). Empty if using custom_function.
+        node_type (Optional[str]): Unique identifier for the node.
         sink (Optional[Union[List[str], str]]): Where to store results in state. Can be:
             - Single string key
             - List of keys for multiple outputs
@@ -77,10 +98,13 @@ class Node:
             Used to ensure consistent response structure.
         image_keys (Optional[List[str]]): List of keys for image file paths when using VLM.
             Must provide at least one image path in kwargs when these are specified.
-        pre_process (Optional[Callable]): Function to run before main execution.
-            Signature: (state: State, client: LLM_Client, **kwargs) -> Optional[State]
-        post_process (Optional[Callable]): Function to run after main execution.
-            Signature: (state: State, client: LLM_Client, **kwargs) -> Optional[State]
+        pre_process (Optional[Union[Callable, Dict[str, Callable]]]): Either a function to run
+            before execution or a dictionary mapping state keys to transform functions.
+        post_process (Optional[Union[Callable, Dict[str, Callable]]]): Either a function to run
+            after execution or a dictionary mapping state keys to transform functions.
+        sink_transform (Optional[Union[Callable, List[Callable]]]): Transform(s) to apply to
+            sink value(s). If sink is a string, must be a single callable. If sink is a list,
+            can be either a single callable (applied to all sinks) or a list of callables.
         custom_function (Optional[Callable]): Custom function to execute instead of LLM query.
             Function parameters become required keys for node execution.
 
@@ -98,7 +122,7 @@ class Node:
         ```python
         # Create a simple text processing node
         node = Node(
-            name="summarizer",
+            node_type="summarizer",
             prompt_template="Summarize this text: {text}",
             sink="summary"
         )
@@ -108,7 +132,7 @@ class Node:
             return x + y
 
         node = Node(
-            name="calculator",
+            node_type="calculator",
             prompt_template="",
             sink="result",
             custom_function=process_data
@@ -116,29 +140,131 @@ class Node:
         ```
     """
 
+    # Simplified set of allowed functions that return values
+    ALLOWED_FUNCTIONS = {
+        "len": len,  # Length of sequences
+        "str": str,  # String conversion
+        "int": int,  # Integer conversion
+        "float": float,  # Float conversion
+        "sum": sum,  # Sum of numbers
+        "max": max,  # Maximum value
+        "min": min,  # Minimum value
+        "abs": abs,  # Absolute value
+    }
+
+    DISALLOWED_FUNCTION_NAMES = [
+        "eval",
+        "exec",
+        "compile",
+        "open",
+        "print",
+        "execfile",
+        "exit",
+        "quit",
+        "help",
+        "dir",
+        "globals",
+        "locals",
+        "dir",
+        "type",
+        "hash",
+        "repr",
+        "filter",
+        "enumerate",
+        "reversed",
+        "sorted",
+        "any",
+        "all",
+    ]
+
+    # String methods that return values
+    ALLOWED_STRING_METHODS = {
+        "upper": str.upper,
+        "lower": str.lower,
+        "strip": str.strip,
+        "capitalize": str.capitalize,
+    }
+
     def __init__(
         self,
-        name: str,
         prompt_template: str,
+        node_type: Optional[str] = None,
         sink: Optional[Union[List[str], str]] = None,
         sink_format: Optional[str] = None,
         image_keys: Optional[List[str]] = None,
         pre_process: Optional[
-            Callable[[State, LLM_Client, Any], Optional[State]]
+            Union[
+                Callable[[State, LLM_Client, Any], Optional[State]], Dict[str, Callable]
+            ]
         ] = None,
         post_process: Optional[
-            Callable[[State, LLM_Client, Any], Optional[State]]
+            Union[
+                Callable[[State, LLM_Client, Any], Optional[State]], Dict[str, Callable]
+            ]
         ] = None,
+        sink_transform: Optional[Union[Callable, List[Callable]]] = None,
         custom_function: Optional[Callable[..., Any]] = None,
+        use_conversation: Optional[bool] = False,
     ):
-        self.name = name
+        # Set default node_type based on whether it's prompt or function-based
+        if node_type is None:
+            if custom_function:
+                self.node_type = custom_function.__name__
+            else:
+                self.node_type = "prompt"
+        else:
+            self.node_type = node_type
+
         self.prompt_template = prompt_template
+        self._escaped_sections = []  # Store escaped sections at instance level
         self.sink = sink
         self.image_keys = image_keys
         self.sink_format = sink_format
-        self.pre_process = pre_process
-        self.post_process = post_process
         self.custom_function = custom_function
+        self.use_conversation = use_conversation
+
+        # Handle pre_process
+        if isinstance(pre_process, dict):
+            transforms = pre_process
+            self.pre_process = (
+                lambda state, client, **kwargs: _process_state_with_transforms(
+                    state, transforms, client, **kwargs
+                )
+            )
+        else:
+            self.pre_process = pre_process
+
+        # Handle post_process
+        if isinstance(post_process, dict):
+            transforms = post_process
+            self.post_process = (
+                lambda state, client, **kwargs: _process_state_with_transforms(
+                    state, transforms, client, **kwargs
+                )
+            )
+        else:
+            self.post_process = post_process
+
+        # Handle sink_transform
+        if sink_transform is not None:
+            if isinstance(sink, str):
+                if not callable(sink_transform):
+                    raise ValueError(
+                        "sink_transform must be callable when sink is a string"
+                    )
+                self._sink_transform = sink_transform
+            elif isinstance(sink, list):
+                if callable(sink_transform):
+                    # If single transform provided for multiple sinks, apply it to all
+                    self._sink_transform = [sink_transform] * len(sink)
+                elif len(sink_transform) != len(sink):
+                    raise ValueError("Number of transforms must match number of sinks")
+                else:
+                    self._sink_transform = sink_transform
+            else:
+                raise ValueError("sink must be specified to use sink_transform")
+        else:
+            self._sink_transform = None
 
         # Extract required keys from template or custom function signature
         if self.custom_function:
@@ -152,16 +278,167 @@ class Node:
                 and param.name != "self"
             ]
         else:
-            # Get keys from prompt template
-            self.required_keys = [
-                fname
-                for _, fname, _, _ in Formatter().parse(prompt_template)
-                if fname is not None
-            ]
+            # Extract base variable names from expressions, excluding function names and escaped content
+            self.required_keys = []
+            # First, temporarily replace escaped content
+            template = prompt_template
+
+            # Replace {{{ }}} sections first
+            import re
+
+            triple_brace_pattern = (
+                r"\{{3}[\s\S]*?\}{3}"  # Non-greedy match, including newlines
+            )
+            for i, match in enumerate(re.finditer(triple_brace_pattern, template)):
+                placeholder = f"___ESCAPED_TRIPLE_{i}___"
+                self._escaped_sections.append((placeholder, match.group(0)))
+                template = template.replace(match.group(0), placeholder)
+
+            # Then replace {{ }} sections
+            double_brace_pattern = (
+                r"\{{2}[\s\S]*?\}{2}"  # Non-greedy match, including newlines
+            )
+            for i, match in enumerate(re.finditer(double_brace_pattern, template)):
+                placeholder = f"___ESCAPED_DOUBLE_{i}___"
+                self._escaped_sections.append((placeholder, match.group(0)))
+                template = template.replace(match.group(0), placeholder)
+
+            self._template_with_placeholders = template  # Store modified template
+
+            # Now parse the template normally
+            for _, expr, _, _ in Formatter().parse(template):
+                if expr is not None:
+                    # Parse the expression to identify actual variables
+                    try:
+                        tree = ast.parse(expr, mode="eval")
+                        variables = set()
+                        for node in ast.walk(tree):
+                            if (
+                                isinstance(node, ast.Name)
+                                and node.id not in self.ALLOWED_FUNCTIONS
+                                and node.id not in self.DISALLOWED_FUNCTION_NAMES
+                            ):
+                                variables.add(node.id)
+                        self.required_keys.extend(variables)
+                    except SyntaxError:
+                        # If parsing fails, fall back to basic extraction
+                        base_var = expr.split("[")[0].split(".")[0].split("(")[0]
+                        if (
+                            base_var not in self.ALLOWED_FUNCTIONS
+                            and base_var not in self.DISALLOWED_FUNCTION_NAMES
+                            and base_var not in self.required_keys
+                        ):
+                            self.required_keys.append(base_var)
+
+            # Remove duplicates while preserving order
+            self.required_keys = list(dict.fromkeys(self.required_keys))
 
         self._prompt_history = [
             prompt_template
         ]  # Add prompt history as private attribute
+
+    def _eval_expr(self, expr: str, context: dict) -> Any:
+        """Safely evaluate a Python expression with limited scope."""
+        try:
+            # Add allowed functions to the context
+            eval_context = {
+                **context,
+                **self.ALLOWED_FUNCTIONS,  # Include built-in functions
+            }
+            tree = ast.parse(expr, mode="eval")
+            return self._eval_node(tree.body, eval_context)
+        except SyntaxError as e:
+            raise ValueError(f"Invalid Python syntax in expression: {str(e)}")
+        except Exception as e:
+            raise ValueError(f"Invalid expression: {str(e)}")
+
+    def _eval_node(self, node: ast.AST, context: dict) -> Any:
+        """Recursively evaluate an AST node with security constraints."""
+        if isinstance(node, ast.Name):
+            if node.id not in context:
+                raise ValueError(f"Variable '{node.id}' not found in context")
+            return context[node.id]
+
+        elif isinstance(node, ast.Constant):
+            return node.value
+
+        elif isinstance(node, ast.UnaryOp):  # Add support for unary operations
+            if isinstance(node.op, ast.USub):  # Handle negative numbers
+                operand = self._eval_node(node.operand, context)
+                return -operand
+            raise ValueError(f"Unsupported unary operator: {type(node.op).__name__}")
+
+        elif isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Attribute):  # Add support for method calls
+                obj = self._eval_node(node.func.value, context)
+                method_name = node.func.attr
+                # List of allowed string methods
+                allowed_string_methods = ["upper", "lower", "title", "strip"]
+                if method_name in allowed_string_methods:
+                    method = getattr(obj, method_name)
+                    args = [self._eval_node(arg, context) for arg in node.args]
+                    return method(*args)
+                raise ValueError(f"String method not allowed: {method_name}")
+            elif isinstance(node.func, ast.Name):
+                func_name = node.func.id
+                if func_name not in self.ALLOWED_FUNCTIONS:
+                    raise ValueError(f"Function not allowed: {func_name}")
+                func = context[
+                    func_name
+                ]  # Get function from context instead of globals
+                args = [self._eval_node(arg, context) for arg in node.args]
+                return func(*args)
+            raise ValueError("Only simple function calls are allowed")
+
+        elif isinstance(node, ast.Attribute):
+            # Handle string methods (e.g., text.upper())
+            if not isinstance(node.value, ast.Name):
+                raise ValueError("Only simple string methods are allowed")
+
+            obj = self._eval_node(node.value, context)
+            if not isinstance(obj, str):
+                raise ValueError("Methods are only allowed on strings")
+
+            method_name = node.attr
+            if method_name not in self.ALLOWED_STRING_METHODS:
+                raise ValueError(f"String method not allowed: {method_name}")
+
+            return self.ALLOWED_STRING_METHODS[method_name](obj)
+
+        elif isinstance(node, (ast.List, ast.Tuple)):
+            return [self._eval_node(elt, context) for elt in node.elts]
+
+        elif isinstance(node, ast.Subscript):
+            value = self._eval_node(node.value, context)
+            if isinstance(node.slice, ast.Slice):
+                lower = (
+                    self._eval_node(node.slice.lower, context)
+                    if node.slice.lower
+                    else None
+                )
+                upper = (
+                    self._eval_node(node.slice.upper, context)
+                    if node.slice.upper
+                    else None
+                )
+                step = (
+                    self._eval_node(node.slice.step, context)
+                    if node.slice.step
+                    else None
+                )
+                return value[slice(lower, upper, step)]
+            else:
+                # Handle both numeric indices and string keys
+                idx = self._eval_node(node.slice, context)
+                try:
+                    return value[idx]
+                except (TypeError, KeyError) as e:
+                    raise ValueError(f"Invalid subscript access: {str(e)}")
+
+        elif isinstance(node, ast.Str):  # For string literals in subscripts
+            return node.s
+
+        raise ValueError(f"Unsupported expression type: {type(node).__name__}")
 
     @property
     def func(self):
@@ -177,7 +454,7 @@ class Node:
             return self(state, client, sink, source, **kwargs)
 
         # Attach the attributes to the function
-        node_function.name = self.name
+        node_function.node_type = self.node_type
         node_function.prompt_template = self.prompt_template
         node_function.sink = self.sink
         node_function.image_keys = self.image_keys
@@ -189,31 +466,33 @@ class Node:
 
     def __call__(
         self,
-        state: Annotated[State, "The current state"],
-        client: Annotated[LLM_Client, "The LLM/VLM client"],
+        state: State,
+        client: Union[LLM_Client, VLM_Client],
         sink: Optional[Union[List[str], str]] = None,
         source: Optional[Union[Dict[str, str], str]] = None,
+        debug: bool = False,
+        use_conversation: Optional[bool] = None,
         **kwargs,
     ) -> State:
         """Creates and executes a node function from this template.
-        
+
         Args:
             state: Current state object containing variables
             client: LLM or VLM client for making API calls
             sink: Optional override for where to store results
             source: Optional mapping of template keys to state keys
             **kwargs: Additional keyword arguments passed to function
-            
+
         Returns:
             Updated state object with results stored in sink keys
-            
+
         Raises:
             ValueError: If required keys are missing or response format is invalid
             FileNotFoundError: If specified image files don't exist
         """
         # Update node type
         state["previous_node_type"] = state.get("current_node_type", "")
-        state["current_node_type"] = self.name
+        state["current_node_type"] = self.node_type
 
         # Pre-processing if defined
         if self.pre_process:
@@ -222,7 +501,9 @@ class Node:
                 return state
             state = pre_process_result
         else:
-            record_messages(state, [("assistant", self.name + " started.", "green")])
+            record_messages(
+                state, [("assistant", self.node_type + " started.", "green")]
+            )
 
         # Get values from state or kwargs
         if isinstance(source, str):
@@ -263,35 +544,103 @@ class Node:
                 message_values["client"] = client
             response = self.custom_function(**message_values)
         else:
-            # Construct message from template
-            message = self.prompt_template.format(**message_values)
+            # Create a context with state variables for expression evaluation
+            eval_context = {**message_values}
 
-            # Get LLM response - handle VLM clients differently
+            # First fill the template with placeholders
+            message = self._template_with_placeholders
+            for _, expr, _, _ in Formatter().parse(self._template_with_placeholders):
+                if expr is not None:
+                    try:
+                        result = self._eval_expr(expr, eval_context)
+                        message = message.replace(f"{{{expr}}}", str(result))
+                    except Exception as e:
+                        raise ValueError(
+                            f"Error evaluating expression '{expr}': {str(e)}"
+                        )
+
+            # Now restore the escaped sections
+            for placeholder, original in self._escaped_sections:
+                message = message.replace(placeholder, original)
+
+            # Record the formatted message
+            record_messages(state, [("nodeology", message, "white")], False)
+
+            # Determine if we should use conversation mode
+            should_use_conversation = (
+                use_conversation
+                if use_conversation is not None
+                else self.use_conversation
+            )
+            if should_use_conversation:
+                assert (
+                    "conversation" in state
+                    and isinstance(state["conversation"], list)
+                    and len(state["conversation"]) > 0
+                    and isinstance(state["conversation"][-1], dict)
+                    and "role" in state["conversation"][-1]
+                    and "content" in state["conversation"][-1]
+                ), "Conversation must be a list of dictionaries with 'role' and 'content' keys"
+
+            # Prepare messages for client call
+            if should_use_conversation:
+                # Filter and format conversation messages
+                messages = [
+                    {"role": msg["role"], "content": msg["content"]}
+                    for msg in state["conversation"]
+                    if msg.get("role") in ["user", "assistant"]
+                ]
+                messages.append({"role": "user", "content": message})
+            else:
+                messages = [{"role": "user", "content": message}]
+
+            # Handle VLM specific requirements
             if self.image_keys:
                 if not isinstance(client, VLM_Client):
                     raise ValueError("VLM client required for image keys")
-                if not any(key in kwargs for key in self.image_keys):
-                    raise ValueError(
-                        "At least one image key must be provided in kwargs"
-                    )
 
+                # Check both state and kwargs for image keys
                 image_paths = []
                 for key in self.image_keys:
-                    if key in kwargs:
+                    if key in state:
+                        path = state[key]
+                    elif key in kwargs:
                         path = kwargs[key]
-                        if not os.path.exists(path):
-                            raise FileNotFoundError(f"Image file not found: {path}")
-                        image_paths.append(path)
+                    else:
+                        continue
+
+                    if path is None:
+                        raise TypeError(
+                            f"Image path for '{key}' should be string, got None"
+                        )
+                    if not isinstance(path, str):
+                        raise TypeError(
+                            f"Image path for '{key}' should be string, got {type(path)}"
+                        )
+                    image_paths.append(path)
+
+                if not image_paths:
+                    raise ValueError(
+                        "At least one image key must be provided in state or kwargs"
+                    )
+
+                # Verify all paths exist
+                for path in image_paths:
+                    if not os.path.exists(path):
+                        raise FileNotFoundError(f"Image file not found: {path}")
+
                 response = client(
-                    messages=[{"role": "user", "content": message}],
+                    messages=messages,
                     images=image_paths,
                     format=self.sink_format,
                 )
             else:
                 response = client(
-                    messages=[{"role": "user", "content": message}],
+                    messages=messages,
                     format=self.sink_format,
                 )
+
+        log_print_color(f"Response: {response}", "white", False)
 
         # Update state with response
         if sink is None:
@@ -299,7 +648,7 @@ class Node:
 
         if sink is None:
             log_print_color(
-                f"Warning: No sink specified for node {self.name}", "yellow"
+                f"Warning: No sink specified for {self.node_type} node", "yellow"
             )
             return state
 
@@ -312,7 +661,7 @@ class Node:
         elif isinstance(sink, list):
             if not sink:
                 log_print_color(
-                    f"Warning: Empty sink list for node {self.name}", "yellow"
+                    f"Warning: Empty sink list for {self.node_type} node", "yellow"
                 )
                 return state
 
@@ -325,11 +674,11 @@ class Node:
             else:
                 if not isinstance(response, (list, tuple)):
                     raise ValueError(
-                        f"Expected multiple responses for multiple sink in node {self.name}, but got a single response"
+                        f"Expected multiple responses for multiple sink in {self.node_type} node, but got a single response"
                     )
                 if len(response) != len(sink):
                     raise ValueError(
-                        f"Number of responses ({len(response)}) doesn't match number of sink ({len(sink)}) in node {self.name}"
+                        f"Number of responses ({len(response)}) doesn't match number of sink ({len(sink)}) in {self.node_type} node"
                     )
 
                 for key, value in zip(sink, response):
@@ -338,6 +687,15 @@ class Node:
                         if not self.custom_function
                         else value
                     )
+
+        # After storing results but before post_process, apply sink transforms
+        if self._sink_transform is not None:
+            current_sink = sink or self.sink
+            if isinstance(current_sink, str):
+                state[current_sink] = self._sink_transform(state[current_sink])
+            else:
+                for key, transform in zip(current_sink, self._sink_transform):
+                    state[key] = transform(state[key])
 
         # Post-processing if defined
         if self.post_process:
@@ -382,7 +740,7 @@ class Node:
         # Build the string representation
         result = [
             double_line,
-            f"{self.name}",
+            f"{self.node_type}",
             horizontal_line,
             *prompt_lines,
             horizontal_line,
@@ -408,7 +766,6 @@ class Node:
 
 
 def as_node(
-    name: str,
     sink: List[str],
     pre_process: Optional[Callable[[State, LLM_Client, Any], Optional[State]]] = None,
     post_process: Optional[Callable[[State, LLM_Client, Any], Optional[State]]] = None,
@@ -421,7 +778,6 @@ def as_node(
     the custom_function of the Node, with its parameters becoming required keys.
 
     Args:
-        name (str): Unique identifier for the node
         sink (List[str]): List of state keys where the function's results will be stored.
             The number of sink keys should match the number of return values from the function.
         pre_process (Optional[Callable]): Function to run before main execution.
@@ -438,7 +794,7 @@ def as_node(
     Example:
         ```python
         # Basic usage
-        @as_node(name="multiply", sink=["result"])
+        @as_node(sink=["result"])
         def multiply(x: int, y: int) -> int:
             return x * y
 
@@ -452,7 +808,6 @@ def as_node(
             return state
 
         @as_node(
-            name="add",
             sink=["result"],
             pre_process=log_start,
             post_process=log_result
@@ -461,7 +816,7 @@ def as_node(
             return x + y
 
         # Multiple return values
-        @as_node(name="stats", sink=["mean", "std"])
+        @as_node(sink=["mean", "std"])
         def calculate_stats(numbers: List[float]) -> Tuple[float, float]:
             return np.mean(numbers), np.std(numbers)
         ```
@@ -478,8 +833,8 @@ def as_node(
     def decorator(func):
         # Create a Node instance with the custom function
         node = Node(
-            name=name,
             prompt_template="",  # Empty template since we're using custom function
+            node_type=func.__name__,
             sink=sink,
             pre_process=pre_process,
             post_process=post_process,
@@ -499,9 +854,11 @@ def as_node(
     return decorator
 
 
-def record_messages(state: State, messages: List[tuple[str, str, str]]):
+def record_messages(
+    state: State, messages: List[tuple[str, str, str]], print_to_console: bool = True
+):
     """Record messages to state and log them with color.
-    
+
     Args:
         state: State object to store messages in
         messages: List of (role, message, color) tuples to record
@@ -512,7 +869,7 @@ def record_messages(state: State, messages: List[tuple[str, str, str]]):
         if "messages" not in state:
             state["messages"] = []
         state["messages"].append({"role": role, "content": message})
-        log_print_color(f"{role}: {message}", color)
+        log_print_color(f"{role}: {message}", color, print_to_console)
 
 
 def remove_markdown_blocks_formatting(text: str) -> str:

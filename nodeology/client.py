@@ -60,7 +60,8 @@ PPLX_URL = "https://api.perplexity.ai/chat/completions"
 OAI_RECOMMENDED_LLMS = [
     "gpt-4o-mini",
     "gpt-4o",
-    "gpt-4" "gpt-4-turbo",
+    "gpt-4",
+    "gpt-4-turbo",
     "o1-mini",
 ]
 OAI_RECOMMENDED_VLMS = [
@@ -130,17 +131,18 @@ This module provides a unified interface for interacting with various LLM and VL
 It supports OpenAI, Ollama, Together AI, Anthropic, and Perplexity AI models.
 """
 
+
 def get_client(model_name, **kwargs):
     """
     Factory function to create appropriate client based on model name.
-    
+
     Args:
         model_name (str): Name of the model to use
         **kwargs: Additional arguments passed to the client constructor
-    
+
     Returns:
         LLM_Client or VLM_Client: Appropriate client instance for the requested model
-    
+
     Raises:
         ValueError: If model_name is not supported
     """
@@ -170,7 +172,7 @@ def get_client(model_name, **kwargs):
 
 class LLM_Client(ABC):
     """Base abstract class for Language Model clients."""
-    
+
     def __init__(self) -> None:
         pass
 
@@ -178,11 +180,11 @@ class LLM_Client(ABC):
     def __call__(self, messages, **kwargs) -> str:
         """
         Process messages and return model response.
-        
+
         Args:
             messages (list): List of message dictionaries with 'role' and 'content'
             **kwargs: Additional model-specific parameters
-            
+
         Returns:
             str: Model's response text
         """
@@ -191,7 +193,7 @@ class LLM_Client(ABC):
 
 class VLM_Client(LLM_Client):
     """Base abstract class for Vision Language Model clients."""
-    
+
     def __init__(self) -> None:
         super().__init__()
 
@@ -199,12 +201,12 @@ class VLM_Client(LLM_Client):
     def process_images(self, messages, images, **kwargs) -> list:
         """
         Process and format images for the model.
-        
+
         Args:
             messages (list): List of message dictionaries
             images (list): List of image file paths
             **kwargs: Additional processing parameters
-            
+
         Returns:
             list: Updated messages with processed images
         """
@@ -272,7 +274,7 @@ class OAI_Client(VLM_Client):
     Client for OpenAI-compatible APIs (OpenAI, Ollama, Together AI).
     Supports both text and image inputs.
     """
-    
+
     def __init__(
         self,
         model_name,
@@ -282,7 +284,7 @@ class OAI_Client(VLM_Client):
     ) -> None:
         """
         Initialize OpenAI-compatible client.
-        
+
         Args:
             model_name (str): Name of the model to use
             model_options (dict): Model parameters like temperature and top_p
@@ -368,24 +370,24 @@ class OAI_Client(VLM_Client):
 class R2R_Client(LLM_Client):
     """
     Client for R2R (Retrieval-to-Response) service that combines RAG with LLM responses.
-    
+
     Attributes:
         model_name (str): Name of the LLM to use
         search_strategy (str): Either 'vanilla' or 'hybrid' search approach
         rag_strategy (str): RAG strategy - 'vanilla', 'hyde', or 'rag_fusion'
     """
-    
+
     def __init__(
         self, model_name="gpt-4o", search_strategy="hybrid", rag_strategy="vanilla"
     ):
         """
         Initialize R2R client.
-        
+
         Args:
             model_name (str): Name of the LLM to use (must be in OAI_RECOMMENDED_LLMS)
             search_strategy (str): Search strategy ('vanilla' or 'hybrid')
             rag_strategy (str): RAG strategy ('vanilla', 'hyde', or 'rag_fusion')
-            
+
         Raises:
             AssertionError: If parameters are invalid or R2R server is unhealthy
         """
@@ -421,13 +423,13 @@ class R2R_Client(LLM_Client):
 class PPLX_Client(LLM_Client):
     """
     Client for Perplexity AI's API service.
-    
+
     Attributes:
         model_name (str): Name of the Perplexity model to use
         model_options (dict): Configuration options for the model
         api_key (str): Perplexity API key
     """
-    
+
     def __init__(
         self,
         model_name="llama-3.1-sonar-large-128k-online",
@@ -443,12 +445,12 @@ class PPLX_Client(LLM_Client):
     ) -> None:
         """
         Initialize Perplexity client.
-        
+
         Args:
             model_name (str): Name of the model (must be in PPLX_RECOMMENDED_MODELS)
             model_options (dict): Model configuration options
             api_key (str, optional): API key. Will check environment if not provided
-            
+
         Raises:
             AssertionError: If model_name is invalid or API key is not set
         """
@@ -467,13 +469,13 @@ class PPLX_Client(LLM_Client):
     def _make_request(self, payload):
         """
         Make HTTP request to Perplexity API.
-        
+
         Args:
             payload (dict): Request payload
-            
+
         Returns:
             dict: API response
-            
+
         Raises:
             requests.exceptions.RequestException: If API request fails
         """
@@ -539,14 +541,14 @@ class PPLX_Client(LLM_Client):
 class ANTHROPIC_Client(VLM_Client):
     """
     Client for Anthropic's Claude models, supporting both text and vision capabilities.
-    
+
     Attributes:
         model_name (str): Name of the Claude model
         model_options (dict): Model configuration options
         api_key (str): Anthropic API key
         base_url (str): API endpoint URL
     """
-    
+
     def __init__(
         self,
         model_name,
@@ -556,13 +558,13 @@ class ANTHROPIC_Client(VLM_Client):
     ) -> None:
         """
         Initialize Anthropic client.
-        
+
         Args:
             model_name (str): Name of the Claude model
             base_url (str, optional): API endpoint URL
             model_options (dict): Model configuration options
             api_key (str, optional): API key. Will check environment if not provided
-            
+
         Raises:
             AssertionError: If API key is not set
         """
@@ -581,11 +583,11 @@ class ANTHROPIC_Client(VLM_Client):
     def process_images(self, messages, images):
         """
         Process and format images for Claude's vision capabilities.
-        
+
         Args:
             messages (list): List of message dictionaries
             images (list): List of image file paths
-            
+
         Returns:
             list: Updated messages with base64-encoded images
         """
@@ -613,15 +615,15 @@ class ANTHROPIC_Client(VLM_Client):
     def __call__(self, messages, images=None, format=None) -> str:
         """
         Send request to Claude API and get response.
-        
+
         Args:
             messages (list): List of message dictionaries
             images (list, optional): List of image file paths
             format (str, optional): Response format (e.g., 'json')
-            
+
         Returns:
             str: Claude's response
-            
+
         Raises:
             ValueError: If request fails after three attempts
         """

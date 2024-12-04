@@ -51,6 +51,7 @@ import shutil
 from pathlib import Path
 import json
 import yaml
+import numpy as np
 
 try:
     from typing import get_type_hints
@@ -62,12 +63,12 @@ from unittest.mock import patch
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from langgraph.graph import StateGraph, END
+from langgraph.graph import END
 from langgraph.graph.state import CompiledStateGraph
-from langgraph.checkpoint.memory import MemorySaver
 from nodeology.workflow import (
     Workflow,
     load_workflow_from_template,
+    export_workflow_to_template,
     _validate_template_structure,
     _validate_nodes,
     _validate_condition_expr,
@@ -79,6 +80,7 @@ from nodeology.workflow import (
 )
 from nodeology.client import LLM_Client
 from nodeology.state import State
+from nodeology.node import Node, as_node
 from nodeology.prebuilt import HilpState
 
 
@@ -105,10 +107,9 @@ class TestWorkflowBase:
 
         class TestWorkflowImpl(Workflow):
             def create_workflow(self):
-                self.workflow = StateGraph(self.state_schema)
-                self.workflow.add_node("start", lambda x: x)
-                self.workflow.set_entry_point("start")
-                self.graph = self.workflow.compile(checkpointer=MemorySaver())
+                self.add_node("start")
+                self.set_entry("start")
+                self.compile()
 
         return TestWorkflowImpl(
             name="test_workflow",
@@ -144,13 +145,13 @@ class TestWorkflowInitialization(TestWorkflowBase):
         class CustomState(State):
             field1: str
             field2: int
+            field3: np.ndarray
 
         class CustomWorkflow(Workflow):
             def create_workflow(self):
-                self.workflow = StateGraph(self.state_schema)
-                self.workflow.add_node("start", lambda x: x)
-                self.workflow.set_entry_point("start")
-                self.graph = self.workflow.compile(checkpointer=MemorySaver())
+                self.add_node("start")
+                self.set_entry("start")
+                self.compile()
 
         workflow = CustomWorkflow(
             name="custom",
@@ -173,10 +174,9 @@ class TestWorkflowInitialization(TestWorkflowBase):
 
         class UnnamedWorkflow(Workflow):
             def create_workflow(self):
-                self.workflow = StateGraph(self.state_schema)
-                self.workflow.add_node("start", lambda x: x)
-                self.workflow.set_entry_point("start")
-                self.graph = self.workflow.compile(checkpointer=MemorySaver())
+                self.add_node("start")
+                self.set_entry("start")
+                self.compile()
 
         workflow = UnnamedWorkflow(debug_mode=True, save_artifacts=False)
         assert workflow.name.startswith("UnnamedWorkflow_")
@@ -284,31 +284,27 @@ class TestWorkflowExecution(TestWorkflowBase):
 
         class ConditionalWorkflow(Workflow):
             def create_workflow(self):
-                self.workflow = StateGraph(self.state_schema)
+                @as_node(["output"])
+                def path_a():
+                    return "Path A"
 
-                def check_condition(state):
-                    return state
+                @as_node(["output"])
+                def path_b():
+                    return "Path B"
 
-                def path_a(state):
-                    return {"output": "Path A"}
+                self.add_node("check")
+                self.add_node("path_a", path_a)
+                self.add_node("path_b", path_b)
 
-                def path_b(state):
-                    return {"output": "Path B"}
-
-                self.workflow.add_node("check", check_condition)
-                self.workflow.add_node("path_a", path_a)
-                self.workflow.add_node("path_b", path_b)
-
-                self.workflow.set_entry_point("check")
-                self.workflow.add_conditional_edges(
+                self.add_conditional_flow(
                     "check",
-                    lambda state: (
-                        "path_a" if state["input"].startswith("a:") else "path_b"
-                    ),
-                    {"path_a": "path_a", "path_b": "path_b"},
+                    lambda state: state["input"].startswith("a:"),
+                    then="path_a",
+                    otherwise="path_b",
                 )
 
-                self.graph = self.workflow.compile(checkpointer=MemorySaver())
+                self.set_entry("check")
+                self.compile()
 
         return ConditionalWorkflow(name="conditional", debug_mode=True)
 
@@ -319,35 +315,22 @@ class TestWorkflowExecution(TestWorkflowBase):
         assert result["input"] == "test"
         assert len(basic_workflow.state_history) == 2  # initial state + final state
 
-    def test_conditional_execution(self, conditional_workflow):
-        """Test conditional workflow execution"""
-        # Test path A
-        result = conditional_workflow.run({"input": "a: test"})
-        assert result["output"] == "Path A"
+    def test_simple_execution(self):
+        """Test that state updates within a simplenode are applied and recorded correctly."""
 
-        # Test path B
-        result = conditional_workflow.run({"input": "b: test"})
-        assert result["output"] == "Path B"
-
-    def test_state_update_within_node_execution(self):
-        """Test that state updates within a node are applied and recorded correctly."""
-
-        class StateUpdateWorkflow(Workflow):
+        class SimpleWorkflow(Workflow):
             def create_workflow(self):
-                self.workflow = StateGraph(self.state_schema)
+                @as_node(sink=["output"])
+                def track_states(input):
+                    return f"Processed {input}"
 
-                def track_states(state):
-                    state = state.copy()
-                    state["output"] = f"Processed {state['input']}"
-                    return state
-
-                self.workflow.add_node("track", track_states)
-                self.workflow.set_entry_point("track")
-                self.graph = self.workflow.compile(checkpointer=MemorySaver())
+                self.add_node("track", track_states)
+                self.set_entry("track")
+                self.compile()
 
         # Initialize the workflow
-        workflow = StateUpdateWorkflow(
-            name="state_update_workflow",
+        workflow = SimpleWorkflow(
+            name="simple_workflow",
             llm_name="mock",
             debug_mode=True,
         )
@@ -361,172 +344,121 @@ class TestWorkflowExecution(TestWorkflowBase):
             len(workflow.state_history) == 2
         )  # initial + final state after track node
 
+    def test_conditional_execution(self, conditional_workflow):
+        """Test conditional workflow execution"""
+        # Test path A
+        result = conditional_workflow.run({"input": "a: test"})
+        assert result["output"] == "Path A"
+
+        # Test path B
+        result = conditional_workflow.run({"input": "b: test"})
+        assert result["output"] == "Path B"
+
     def test_human_in_the_loop_workflow(self):
         """Test workflow execution with human-in-the-loop interactions"""
 
-        # Define a human-in-the-loop workflow
         class HumanInLoopWorkflow(Workflow):
             def create_workflow(self):
-                self.workflow = StateGraph(self.state_schema)
+                @as_node(["output"])
+                def process_input(human_input):
+                    return f"Processed input: {human_input}"
 
-                # Define nodes
-                def recieve_input(state):
-                    pass
+                self.add_node("receive_input")
+                self.add_node("process_input", process_input)
 
-                def process_input(state):
-                    state["output"] = f"Processed input: {state['human_input']}"
-                    return state
+                self.add_flow("receive_input", "process_input")
+                self.add_flow("process_input", END)
 
-                # Add nodes to the workflow
-                self.workflow.add_node("recieve_input", recieve_input)
-                self.workflow.add_node("process_input", process_input)
+                self.set_entry("receive_input")
+                self.compile(interrupt_before=["receive_input"], auto_input_nodes=False)
 
-                # Define the interrupt point before 'process' node
-                interrupt_before_list = ["recieve_input"]
-
-                # Add edges
-                self.workflow.add_edge("recieve_input", "process_input")
-                self.workflow.add_edge("process_input", END)
-
-                # Set entry point
-                self.workflow.set_entry_point("recieve_input")
-
-                # Compile the workflow with interrupt
-                self.graph = self.workflow.compile(
-                    checkpointer=MemorySaver(), interrupt_before=interrupt_before_list
-                )
-
-        # Initialize the workflow
         workflow = HumanInLoopWorkflow(
             name="human_in_loop_workflow",
             llm_name="mock",
             debug_mode=True,
         )
 
-        # Mock the input function to simulate human input
         with patch("builtins.input", return_value="Test input"):
             result = workflow.run({"human_input": "initial input"})
 
-        # Verify the output
         assert result["output"] == "Processed input: Test input"
         assert result["human_input"] == "Test input"
-        assert (
-            len(workflow.state_history) == 4
-        )  # initial + receive_input + process_input + final
+        assert len(workflow.state_history) == 4
 
     def test_multiple_human_inputs_workflow(self):
         """Test workflow with multiple human-in-the-loop interactions"""
 
-        # Define a workflow with multiple interrupt points
         class MultiHumanInputWorkflow(Workflow):
             def create_workflow(self):
-                self.workflow = StateGraph(self.state_schema)
+                @as_node(["output"])
+                def node_a(human_input):
+                    return f"Node A seen: {human_input}"
 
-                # Define nodes
-                def input_1(state):
-                    pass
+                @as_node(["output"])
+                def node_b(human_input):
+                    return f"Node B seen: {human_input}"
 
-                def node_a(state):
-                    state["output"] = f"Node A seen: {state['human_input']}"
-                    return state
+                @as_node(["output"])
+                def node_c(human_input):
+                    return f"Node C seen: {human_input}"
 
-                def node_b(state):
-                    state["output"] = f"Node B seen: {state['human_input']}"
-                    return state
+                self.add_node("input_1")
+                self.add_node("node_a", node_a)
+                self.add_node("node_b", node_b)
+                self.add_node("input_2")
+                self.add_node("node_c", node_c)
 
-                def input_2(state):
-                    pass
+                self.add_flow("input_1", "node_a")
+                self.add_flow("node_a", "node_b")
+                self.add_flow("node_b", "input_2")
+                self.add_flow("input_2", "node_c")
+                self.add_flow("node_c", END)
 
-                def node_c(state):
-                    state["output"] = f"Node C seen: {state['human_input']}"
-                    return state
-
-                # Add nodes to the workflow
-                self.workflow.add_node("input_1", input_1)
-                self.workflow.add_node("node_a", node_a)
-                self.workflow.add_node("node_b", node_b)
-                self.workflow.add_node("input_2", input_2)
-                self.workflow.add_node("node_c", node_c)
-
-                # Define interrupt points
-                interrupt_before_list = ["input_1", "input_2"]
-
-                # Add edges
-                self.workflow.add_edge("input_1", "node_a")
-                self.workflow.add_edge("node_a", "node_b")
-                self.workflow.add_edge("node_b", "input_2")
-                self.workflow.add_edge("input_2", "node_c")
-                self.workflow.add_edge("node_c", END)
-
-                # Set entry point
-                self.workflow.set_entry_point("input_1")
-
-                # Compile the workflow with interrupts
-                self.graph = self.workflow.compile(
-                    checkpointer=MemorySaver(), interrupt_before=interrupt_before_list
+                self.set_entry("input_1")
+                self.compile(
+                    interrupt_before=["input_1", "input_2"], auto_input_nodes=False
                 )
 
-        # Initialize the workflow
         workflow = MultiHumanInputWorkflow(
             name="multi_human_input_workflow",
             llm_name="mock",
             debug_mode=True,
         )
 
-        # Mock the input function to simulate human inputs
         inputs = iter(["First input", "Second input"])
         with patch("builtins.input", lambda _: next(inputs)):
             result = workflow.run({"human_input": "start input"})
 
-        # Verify the output
         assert result["output"] == "Node C seen: Second input"
-        assert (
-            len(workflow.state_history) == 8
-        )  # initial + input1 + nodeA + nodeB + input2 + nodeC + final
+        assert len(workflow.state_history) == 8
 
     def test_workflow_exit(self):
         """Test workflow handles both custom exit condition and built-in exit_commands correctly"""
 
         class ExitWorkflow(Workflow):
             def create_workflow(self):
-                self.workflow = StateGraph(self.state_schema)
+                @as_node(["output"])
+                def continue_or_end():
+                    return "Continue or end"
 
-                def recieve_input(state):
-                    pass
+                @as_node(["output"])
+                def process_input(human_input):
+                    return f"Processed input: {human_input}"
 
-                def continue_or_end(state):
-                    state["output"] = "Continue or end"
-                    return state
+                self.add_node("recieve_input")
+                self.add_node("process_input", process_input)
+                self.add_node("continue_or_end", continue_or_end)
 
-                def process_input(state):
-                    state["output"] = f"Processed input: {state['human_input']}"
-                    return state
-
-                # Add nodes
-                self.workflow.add_node("recieve_input", recieve_input)
-                self.workflow.add_node("process_input", process_input)
-                self.workflow.add_node("continue_or_end", continue_or_end)
-
-                # Add conditional edge that either continues or ends
-                self.workflow.add_edge("recieve_input", "continue_or_end")
-                self.workflow.add_conditional_edges(
+                self.add_flow("recieve_input", "continue_or_end")
+                self.add_conditional_flow(
                     "continue_or_end",
-                    lambda state: (
-                        "end"
-                        if state["human_input"].lower() == "magic_word"
-                        else "continue"
-                    ),
-                    {"continue": "process_input", "end": END},
+                    lambda state: not state["human_input"].lower() == "magic_word",
+                    then="process_input",
+                    otherwise=END,
                 )
-                self.workflow.add_edge("process_input", END)
 
-                # Set entry point
-                self.workflow.set_entry_point("recieve_input")
-
-                # Compile with interrupt
-                self.graph = self.workflow.compile(
-                    checkpointer=MemorySaver(), interrupt_before=["recieve_input"]
-                )
+                self.set_entry("recieve_input")
+                self.compile(interrupt_before=["recieve_input"], auto_input_nodes=False)
 
         # Test Case 1: Exit via magic_word
         workflow1 = ExitWorkflow(
@@ -583,14 +515,13 @@ class TestWorkflowErrorHandling(TestWorkflowBase):
 
         class ErrorWorkflow(Workflow):
             def create_workflow(self):
-                self.workflow = StateGraph(self.state_schema)
-
-                def error_node(state):
+                @as_node(["output"])
+                def error_node():
                     raise ValueError("Test error")
 
-                self.workflow.add_node("error", error_node)
-                self.workflow.set_entry_point("error")
-                self.graph = self.workflow.compile(checkpointer=MemorySaver())
+                self.add_node("error", error_node)
+                self.set_entry("error")
+                self.compile()
 
         return ErrorWorkflow(name="error_test", debug_mode=True)
 
@@ -751,16 +682,6 @@ class TestTemplateValidation(TestWorkflowBase):
         with pytest.raises(ValueError, match="missing 'template' field"):
             _validate_prompt_node("test_node", invalid_config)
 
-        # Test invalid image_keys
-        invalid_config = {
-            "type": "prompt",
-            "template": "test",
-            "next": "end",
-            "image_keys": "not_a_list",
-        }
-        with pytest.raises(ValueError, match="image_keys must be a list"):
-            _validate_prompt_node("test_node", invalid_config)
-
     def test_validate_state_definitions(self):
         """Test state definition validation"""
 
@@ -791,15 +712,19 @@ class TestTemplateValidation(TestWorkflowBase):
         _validate_node_transitions("test_node", "next_node")
 
         # Test valid conditional transition
-        valid_condition = {"condition": "count > 0", "then": "path_a", "else": "path_b"}
+        valid_condition = {
+            "condition": "count > 0",
+            "then": "path_a",
+            "otherwise": "path_b",
+        }
         _validate_node_transitions("test_node", valid_condition)
 
         # Test missing condition
         with pytest.raises(ValueError, match="missing 'condition'"):
-            _validate_node_transitions("test_node", {"then": "a", "else": "b"})
+            _validate_node_transitions("test_node", {"then": "a", "otherwise": "b"})
 
         # Test missing paths
-        with pytest.raises(ValueError, match="missing then/else paths"):
+        with pytest.raises(ValueError, match="missing then/otherwise paths"):
             _validate_node_transitions("test_node", {"condition": "x > 0"})
 
         # Test invalid condition
@@ -809,7 +734,7 @@ class TestTemplateValidation(TestWorkflowBase):
                 {
                     "condition": "import os",  # Unsafe expression
                     "then": "a",
-                    "else": "b",
+                    "otherwise": "b",
                 },
             )
 
@@ -823,21 +748,21 @@ class TestTemplateValidation(TestWorkflowBase):
         }
 
         # Test basic comparisons
-        assert _eval_condition("count > 3", test_state) == "true"
-        assert _eval_condition("count < 3", test_state) == "false"
-        assert _eval_condition("status == 'active'", test_state) == "true"
+        assert _eval_condition("count > 3", test_state) == True
+        assert _eval_condition("count < 3", test_state) == False
+        assert _eval_condition("status == 'active'", test_state) == True
 
         # Test list operations
-        assert _eval_condition("len(items) == 3", test_state) == "true"
-        assert _eval_condition("'a' in items", test_state) == "true"
+        assert _eval_condition("len(items) == 3", test_state) == True
+        assert _eval_condition("'a' in items", test_state) == True
 
         # Test dict operations
-        assert _eval_condition("'key' in data", test_state) == "true"
-        assert _eval_condition("data['key'] == 'value'", test_state) == "true"
+        assert _eval_condition("'key' in data", test_state) == True
+        assert _eval_condition("data['key'] == 'value'", test_state) == True
 
         # Test complex conditions
-        assert _eval_condition("count > 0 and status == 'active'", test_state) == "true"
-        assert _eval_condition("len(items) > 5 or count < 10", test_state) == "true"
+        assert _eval_condition("count > 0 and status == 'active'", test_state) == True
+        assert _eval_condition("len(items) > 5 or count < 10", test_state) == True
 
         # Test invalid expressions
         with pytest.raises(ValueError):
@@ -949,7 +874,7 @@ class TestTemplateLoading(TestWorkflowBase):
                     "next": {
                         "condition": "'path_a' in output",
                         "then": "path_a",
-                        "else": "path_b",
+                        "otherwise": "path_b",
                     },
                 },
                 "path_a": {
@@ -996,7 +921,7 @@ class TestTemplateLoading(TestWorkflowBase):
                     "next": {
                         "condition": "value > 10",
                         "then": "success",
-                        "else": "start",
+                        "otherwise": "start",
                     },
                 },
                 "success": {
@@ -1138,15 +1063,16 @@ class TestTemplateLoading(TestWorkflowBase):
         # Verify path A execution
         assert result_a["current_node_type"] == "final"
         assert result_a["previous_node_type"] == "path_a"
-        assert (
-            len(result_a["messages"]) == 5
-        )  # Initial input + 2 assistant msgs + final input + final assistant msg
+        assert len(result_a["messages"]) == 8
         assert result_a["messages"][0]["role"] == "user"
         assert result_a["messages"][0]["content"] == "path_a:test"
         assert result_a["messages"][1]["content"] == "start started."
-        assert result_a["messages"][2]["content"] == "path_a started."
-        assert result_a["messages"][3]["content"] == "final input"
-        assert result_a["messages"][4]["content"] == "final started."
+        assert result_a["messages"][2]["content"] == "Initial prompt: path_a:test"
+        assert result_a["messages"][3]["content"] == "path_a started."
+        assert result_a["messages"][4]["content"] == "Processing path A: path_a:test"
+        assert result_a["messages"][5]["content"] == "final input"
+        assert result_a["messages"][6]["content"] == "final started."
+        assert result_a["messages"][7]["content"] == "Final output: final input"
 
         # Update workflow for path B
         workflow.update_state({"human_input": "", "output": ""})
@@ -1160,13 +1086,17 @@ class TestTemplateLoading(TestWorkflowBase):
         assert result_b["current_node_type"] == "final"
         assert result_b["previous_node_type"] == "path_b"
         assert (
-            len(result_b["messages"]) == 10
+            len(result_b["messages"]) == 16
         )  # Previous 5 msgs + new input + 2 assistant msgs + final input + final assistant msg
-        assert result_b["messages"][5]["role"] == "user"
-        assert result_b["messages"][5]["content"] == "path_b:test"
-        assert result_b["messages"][6]["content"] == "start started."
-        assert result_b["messages"][7]["content"] == "path_b started."
-        assert result_b["messages"][8]["content"] == "final input"
+        assert result_b["messages"][8]["role"] == "user"
+        assert result_b["messages"][8]["content"] == "path_b:test"
+        assert result_b["messages"][9]["content"] == "start started."
+        assert result_b["messages"][10]["content"] == "Initial prompt: path_b:test"
+        assert result_b["messages"][11]["content"] == "path_b started."
+        assert result_b["messages"][12]["content"] == "Processing path B: path_b:test"
+        assert result_b["messages"][13]["content"] == "final input"
+        assert result_b["messages"][14]["content"] == "final started."
+        assert result_b["messages"][15]["content"] == "Final output: final input"
 
         # Verify state history length for both paths
         assert (
@@ -1176,21 +1106,18 @@ class TestTemplateLoading(TestWorkflowBase):
     def test_custom_components_loading(self, template_files, temp_dir):
         """Test loading template with custom nodes and states"""
 
-        def custom_node(state, client, **kwargs):
+        @as_node(["value", "status"])
+        def custom_node(value):
             """Custom node that doubles the value"""
-            state = state.copy()
-            state["value"] = state["value"] * 2
-            state["status"] = "processed"
-            return state
+            return value * 2, "processed"
 
-        def custom_validator(state, client, **kwargs):
+        @as_node(["value", "status"])
+        def custom_validator(value):
             """Custom validator that checks if value > 10"""
-            state = state.copy()
-            if state["value"] > 10:
-                state["status"] = "validated"
+            if value > 10:
+                return value, "validated"
             else:
-                state["status"] = "failed_validation"
-            return state
+                return value, "failed_validation"
 
         # Create registry with custom nodes
         custom_nodes = {
@@ -1231,3 +1158,254 @@ class TestTemplateLoading(TestWorkflowBase):
         # Verify state history for direct pass case
         # Initial -> start -> process -> validate -> success
         assert len(workflow.state_history) >= 5
+
+
+class TestTemplateExport(TestWorkflowBase):
+    """Tests for template export and recovery functionality"""
+
+    @pytest.fixture
+    def sample_workflow(self):
+        """Create a sample workflow with various node types for testing export"""
+
+        class SampleState(HilpState):
+            processed: bool
+            image_analysis: str
+            image_input: str
+
+        class SampleWorkflow(Workflow):
+            def create_workflow(self):
+                # Add initial prompt node
+                self.add_node(
+                    "start",
+                    Node(
+                        prompt_template="Initial prompt: {human_input}", sink="output"
+                    ),
+                )
+
+                # Add function-based processing node
+                @as_node(sink=["output", "processed"])
+                def process_data(output: str) -> tuple[str, bool]:
+                    """Process the input data and return result with processing flag"""
+                    processed_text = f"Processed: {output.upper()}"
+                    return processed_text, True
+
+                self.add_node("process", process_data)
+
+                # Add VLM-based image analysis node
+                self.add_node(
+                    "analyze_image",
+                    Node(
+                        prompt_template="Describe this image in detail: {image_input}",
+                        sink="image_analysis",
+                        image_keys=["image_input"],
+                    ),
+                    client_type="vlm",  # Specify VLM client
+                )
+
+                final_template = """Summarize the results: 
+Regular processing: {processed}
+Image analysis: {image_analysis}
+Final output: {output}"""
+                # Add final summary node
+                self.add_node(
+                    "final",
+                    Node(
+                        prompt_template=final_template,
+                        sink="output",
+                    ),
+                )
+
+                # Add conditional routing
+                self.add_conditional_flow(
+                    "start",
+                    lambda state: "image" in state["output"],
+                    then="analyze_image",
+                    otherwise="process",
+                )
+
+                self.add_flow("process", "final")
+                self.add_flow("analyze_image", "final")
+                self.add_flow("final", END)
+
+                # Set entry and compile with intervention points
+                self.set_entry("start")
+                self.compile(interrupt_before=["start", "final"], auto_input_nodes=True)
+
+        return SampleWorkflow(
+            name="test_export",
+            llm_name="mock",
+            vlm_name="mock_vlm",
+            state_defs=SampleState,
+            exit_commands=["quit", "exit"],
+            debug_mode=True,
+        )
+
+    def test_basic_export(self, sample_workflow, temp_dir):
+        """Test basic template export functionality"""
+        export_path = os.path.join(temp_dir, "exported.yaml")
+
+        # Export template
+        template = export_workflow_to_template(sample_workflow, export_path)
+
+        # Verify template structure
+        assert template["name"] == "test_export"
+        assert template["llm"] == "mock"
+        assert template["vlm"] == "mock_vlm"
+        assert template["exit_commands"] == ["quit", "exit"]
+        assert "state_defs" in template
+        assert "nodes" in template
+        assert set(template["nodes"].keys()) == {
+            "start",
+            "process",
+            "analyze_image",
+            "final",
+        }
+        assert template["entry_point"] == "start"
+        assert set(template["intervene_before"]) == set(["start", "final"])
+
+        # Verify file was created
+        assert os.path.exists(export_path)
+
+    def test_yaml_format(self, sample_workflow, temp_dir):
+        """Test that YAML is exported in the exact desired format"""
+        export_path = os.path.join(temp_dir, "clean_format.yaml")
+        export_workflow_to_template(sample_workflow, export_path)
+
+        with open(export_path) as f:
+            content = f.read()
+
+        # Verify state_defs format
+        assert "- current_node_type: str" in content
+
+        # Verify single-item format
+        assert "sink: output" in content  # Not sink: [output]
+        assert "image_keys: image_input" in content  # Not image_keys: [image_input]
+
+        # Verify inline lists
+        assert (
+            "exit_commands: [quit, exit]" in content
+            or "exit_commands: [exit, quit]" in content
+        )
+        assert (
+            "intervene_before: [start, final]" in content
+            or "intervene_before: [final, start]" in content
+        )
+
+        # Verify node field ordering
+        node_content = content[content.index("nodes:") :]
+        type_index = node_content.index("type: prompt")
+        next_index = node_content.index("next:")
+        assert type_index < next_index, "type should come before next"
+
+        # Verify the exported YAML is valid and loadable
+        yaml_content = yaml.safe_load(content)
+        assert yaml_content["name"] == "test_export"
+        assert len(yaml_content["state_defs"]) > 0
+        assert len(yaml_content["nodes"]) > 0
+
+    def test_round_trip(self, sample_workflow, temp_dir):
+        """Test that exporting and re-importing a workflow preserves its structure"""
+        # Export the workflow to a template
+        export_path = os.path.join(temp_dir, "round_trip.yaml")
+        _ = export_workflow_to_template(sample_workflow, export_path)
+
+        # Define the custom nodes that were used in the original workflow
+        @as_node(sink=["output", "processed"])
+        def process_data(output: str) -> tuple[str, bool]:
+            """Process the input data and return result with processing flag"""
+            processed_text = f"Processed: {output.upper()}"
+            return processed_text, True
+
+        custom_nodes = {"process": process_data}
+
+        # Load the workflow back from the template
+        reloaded_workflow = load_workflow_from_template(
+            export_path, custom_nodes=custom_nodes
+        )
+
+        # Verify basic properties
+        assert reloaded_workflow.name == sample_workflow.name
+        assert (
+            reloaded_workflow.llm_client.model_name
+            == sample_workflow.llm_client.model_name
+        )
+        assert (
+            reloaded_workflow.vlm_client.model_name
+            == sample_workflow.vlm_client.model_name
+        )
+        assert reloaded_workflow.exit_commands == sample_workflow.exit_commands
+
+        # Compare interrupt_before nodes without the '_input' suffix
+        original_nodes = set(
+            node.replace("_input", "") for node in sample_workflow._interrupt_before
+        )
+        reloaded_nodes = set(
+            node.replace("_input", "") for node in reloaded_workflow._interrupt_before
+        )
+        assert original_nodes == reloaded_nodes
+
+        # Verify nodes configuration
+        for node_name in original_nodes:
+            orig_config = sample_workflow._node_configs[node_name]
+            reload_config = reloaded_workflow._node_configs[node_name]
+
+            # Compare essential node properties
+            assert orig_config.get("type") == reload_config.get("type")
+            # Normalize and compare templates
+            orig_template = orig_config.get("template", "").replace("\n", " ").strip()
+            reload_template = (
+                reload_config.get("template", "").replace("\n", " ").strip()
+            )
+            while "  " in orig_template:  # Remove double spaces
+                orig_template = orig_template.replace("  ", " ")
+            while "  " in reload_template:
+                reload_template = reload_template.replace("  ", " ")
+            assert orig_template == reload_template
+            assert orig_config.get("sink") == reload_config.get("sink")
+            assert orig_config.get("image_keys") == reload_config.get("image_keys")
+
+            # Compare next configurations
+            orig_next = orig_config.get("next")
+            reload_next = reload_config.get("next")
+            if isinstance(orig_next, dict):
+                assert isinstance(reload_next, dict)
+                assert orig_next.get("condition") == reload_next.get("condition")
+                assert (orig_next.get("then") == END) == (
+                    reload_next.get("then") == END
+                )
+                assert (orig_next.get("otherwise") == END) == (
+                    reload_next.get("otherwise") == END
+                )
+            else:
+                assert (orig_next == END) == (reload_next == END)
+
+        # Verify state schema
+        orig_hints = get_type_hints(sample_workflow.state_schema)
+        reload_hints = get_type_hints(reloaded_workflow.state_schema)
+        assert set(orig_hints.keys()) == set(reload_hints.keys())
+        for k in orig_hints:
+            assert orig_hints[k] == reload_hints[k]
+
+        # Verify entry point
+        assert reloaded_workflow._entry_point == sample_workflow._entry_point
+
+        # Test execution with same input
+        test_input = {
+            "human_input": "test input",
+            "output": "",
+            "processed": False,
+            "image_analysis": "",
+            "image_input": "test_image.jpg",
+        }
+
+        with patch(
+            "builtins.input",
+            side_effect=["continue", "continue", "continue", "continue", "continue"],
+        ):
+            original_result = sample_workflow.run(test_input.copy())
+            reloaded_result = reloaded_workflow.run(test_input.copy())
+
+        # Compare execution results
+        assert original_result.keys() == reloaded_result.keys()
+        for k in original_result:
+            assert original_result[k].__class__ == reloaded_result[k].__class__

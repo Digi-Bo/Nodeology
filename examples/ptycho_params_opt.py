@@ -45,11 +45,13 @@ POSSIBILITY OF SUCH DAMAGE.
 
 ### Initial Author <2024>: Xiangyu Yin
 
-### This is a demo of simplified PEAR workflow at automation level 2 for parameter optimization of Ptychography.
+### This is a demo of simplified ptychography parameter optimization workflow at automation level 2 from PEAR.
 ### "PEAR: A Robust and Flexible Automation Framework for Ptychography Enabled by Multiple Large Language Model Agents"
 ### https://arxiv.org/abs/2410.09034
 
-import os
+import os, sys
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from nodeology.prebuilt import (
     survey,
     formatter,
@@ -69,14 +71,19 @@ from langgraph.graph import StateGraph
 from langgraph.checkpoint.memory import MemorySaver
 
 
-class PtychoOpt(Workflow):
-    def __init__(self, data_path, script_path, knowledge_path, executable_path,
-                 capture_output_func=lambda x: x.strip().split("\n")[-1],
-                 result2image_convert_func=lambda x: x,
-                 memory_saver=MemorySaver(),
-                 **kwargs) -> None:
-        """Initialize PtychoOpt workflow
-        
+class PtychoParamsOpt(Workflow):
+    def __init__(
+        self,
+        data_path,
+        script_path,
+        knowledge_path,
+        executable_path,
+        capture_output_func=lambda x: x.strip().split("\n")[-1],
+        result2image_convert_func=lambda x: x,
+        **kwargs,
+    ) -> None:
+        """Initialize PtychoParamsOpt workflow
+
         Args:
             data_path: Path to data directory
             script_path: Path to reconstruction script
@@ -94,28 +101,40 @@ class PtychoOpt(Workflow):
         self.executable_path = executable_path
         self.capture_output_func = capture_output_func
         self.result2image_convert_func = result2image_convert_func
-        self.memory_saver = memory_saver
 
         # Call parent constructor with required arguments
         super().__init__(
-            name="ptycho_opt",
-            state_defs=[HilpState, ParamsOptState, CodingState, RecommendationState, DiagnosisState],
-            llm_name="gpt-4o-mini",
-            exit_commands=["stop pear", "quit pear", "terminate pear"],
-            **kwargs
+            name="ptycho_params_opt",
+            state_defs=[
+                HilpState,
+                ParamsOptState,
+                CodingState,
+                RecommendationState,
+                DiagnosisState,
+            ],
+            llm_name="gpt-4o",
+            vlm_name="gpt-4o",
+            **kwargs,
         )
-        
-        # Load knowledge base after initialization
-        self._read_knowledge()
-        self._initialize_pear()
+
+        # Load knowledge base and initialize workflow
+        # self._read_knowledge()
+        # self.initialize({
+        #     "data_path": self.data_path,
+        #     "params_desc": self.params_desc,
+        #     "params_questions": self.params_questions,
+        #     "recommender_knowledge": self.recommender_knowledge,
+        #     "code_example": self.example_recon_script,
+        #     "example_diagnosis": self.example_recon_qualities
+        # })
 
     def _read_knowledge(self):
         """Read necessary knowledge base files
-        
+
         The example knowledge_path directory structure:
         knowledge_path/
         ├── example_script.py          # Example reconstruction script
-        ├── params_description.md      # Parameter descriptions 
+        ├── params_description.md      # Parameter descriptions
         ├── params_questions.md        # Questions for parameter collection
         ├── params_knowledge.md        # Knowledge for AI recommendations
         └── example_recons/           # Example reconstructions
@@ -151,111 +170,67 @@ class PtychoOpt(Workflow):
                     if os.path.exists(quality_path):
                         with open(quality_path, "r") as f:
                             self.example_recon_qualities[recon_path] = f.read()
-    
-    def _initialize_pear(self):
-        """Initialize PEAR workflow"""
-        self.initialize({
-            "data_path": self.data_path,
-            "params_desc": self.params_desc,
-            "params_questions": self.params_questions,
-            "recommender_knowledge": self.recommender_knowledge,
-            "code_example": self.example_recon_script,
-            "example_diagnosis": self.example_recon_qualities
-        })
 
     def create_workflow(self):
         """Create fully automated workflow (automation_level=2)"""
-        self.workflow = StateGraph(self.state_schema)
-
-        # Add nodes for each step of the workflow
-        self.workflow.add_node(
-            "params_collector",
-            lambda state: survey(state, self.llm_client)
+        # Add nodes with simplified syntax
+        self.add_node("params_collector", survey)
+        self.add_node("params_formatter", formatter, source="conversation_summary")
+        self.add_node("params_recommender", recommender, source="conversation_summary")
+        self.add_node("params_updater", updater, source="recommendation")
+        self.add_node("params_confirmer", updater, source="human_input")
+        self.add_node(
+            "script_generator", code_rewriter, source={"context": "params_desc"}
         )
-        self.workflow.add_node(
-            "params_collector_input",
-            lambda state: state
-        )
-        self.workflow.add_node(
-            "params_formatter",
-            lambda state: formatter(state, self.llm_client, source="conversation_summary")
-        )
-        self.workflow.add_node(
-            "params_recommender",
-            lambda state: recommender(state, self.llm_client, source="conversation_summary")
-        )
-        self.workflow.add_node(
-            "params_updater",
-            lambda state: updater(state, self.llm_client, source="recommendation")
-        )
-        self.workflow.add_node(
-            "params_confirmer",
-            lambda state: updater(state, self.llm_client, source="human_input")
-        )
-        self.workflow.add_node(
-            "params_confirm_input",
-            lambda state: state
-        )
-        self.workflow.add_node(
-            "script_generator",
-            lambda state: code_rewriter(state, self.llm_client, source={"context": "params_desc"})
-        )
-        self.workflow.add_node(
+        self.add_node(
             "script_runner",
-            lambda state: execute_code(
-                state,
-                self.llm_client,
-                executable_path=self.executable_path,
-                capture_output_func=self.capture_output_func
-            )
+            execute_code,
+            executable_path=self.executable_path,
+            capture_output_func=self.capture_output_func,
         )
-        self.workflow.add_node(
+        self.add_node(
             "quality_commentator",
-            lambda state: commentator(
-                state,
-                self.llm_client,
-                result2image_convert_func=self.result2image_convert_func
-            )
+            commentator,
+            result2image_convert_func=self.result2image_convert_func,
         )
-        self.workflow.add_node(
-            "updates_recommender",
-            lambda state: recommender(state, self.llm_client, source="diagnosis")
-        )
+        self.add_node("updates_recommender", recommender, source="diagnosis")
 
-        # Add edges between nodes
-        self.workflow.add_conditional_edges(
+        # Add edges with simplified syntax
+        self.add_conditional_flow(
             "params_collector",
-            lambda state: "then" if state["end_conversation"] else "continue",
-            {
-                "then": "params_formatter",
-                "continue": "params_collector_input",
-            }
+            "end_conversation",
+            then="params_formatter",
+            otherwise="params_collector",
         )
-        self.workflow.add_edge("params_collector_input", "params_collector")
-        self.workflow.add_edge("params_formatter", "params_recommender")
-        self.workflow.add_edge("params_recommender", "params_updater")
-        self.workflow.add_edge("params_updater", "params_confirmer")
-        self.workflow.add_edge("params_confirmer_input", "params_confirmer")
-        self.workflow.add_conditional_edges(
+        self.add_flow("params_formatter", "params_recommender")
+        self.add_flow("params_recommender", "params_updater")
+        self.add_flow("params_updater", "params_confirmer")
+        self.add_conditional_flow(
             "params_confirmer",
-            lambda state: "then" if state["end_conversation"] else "continue",
-            {
-                "then": "script_generator",
-                "continue": "params_confirmer_input",
-            }
+            "end_conversation",
+            then="script_generator",
+            otherwise="params_confirmer",
         )
-        self.workflow.add_edge("script_generator", "script_runner")
-        self.workflow.add_edge("script_runner", "quality_commentator")
-        self.workflow.add_edge("quality_commentator", "updates_recommender")
-        self.workflow.add_edge("updates_recommender", "params_updater")
-        
+        self.add_flow("script_generator", "script_runner")
+        self.add_flow("script_runner", "quality_commentator")
+        self.add_flow("quality_commentator", "updates_recommender")
+        self.add_flow("updates_recommender", "params_updater")
+
         # Set entry point
-        self.workflow.set_entry_point("params_collector")
-        
-        # Compile workflow with memory saver and interrupt points
-        interrupt_before_list = ["params_collector_input", "params_confirmer_input"]
-        self.graph = self.workflow.compile(
-            checkpointer=self.memory_saver, 
-            interrupt_before=interrupt_before_list
-        )
- 
+        self.set_entry("params_collector")
+
+        # Compile workflow
+        self.compile(interrupt_before=["params_collector", "params_confirmer"])
+
+
+if __name__ == "__main__":
+    workflow = PtychoParamsOpt(
+        data_path="data",
+        script_path="script",
+        knowledge_path="knowledge",
+        executable_path="executable",
+    )
+    workflow.to_yaml("ptycho_params_opt.yaml")
+    workflow.graph.get_graph().draw_mermaid_png(
+        output_file_path="ptycho_params_opt.png"
+    )

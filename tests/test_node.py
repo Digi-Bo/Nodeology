@@ -50,6 +50,8 @@ import os, sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import logging
 import pytest
+from typing import Any, Dict, List
+import numpy as np
 from nodeology.client import VLM_Client
 from nodeology.node import (
     Node,
@@ -69,12 +71,12 @@ class TestBasicNodeFunctionality:
     def test_node_creation(self):
         """Test basic node creation and configuration"""
         node = Node(
-            name="test_node",
+            node_type="test_node",
             prompt_template="Test prompt with {key1} and {key2}",
             sink=["output"],
         )
 
-        assert node.name == "test_node"
+        assert node.node_type == "test_node"
         assert "key1" in node.required_keys
         assert "key2" in node.required_keys
         assert node.sink == ["output"]
@@ -82,7 +84,7 @@ class TestBasicNodeFunctionality:
     def test_node_error_handling(self):
         """Test node error handling for missing required keys"""
         node = Node(
-            name="test_node", prompt_template="Test {required_key}", sink="output"
+            node_type="test_node", prompt_template="Test {required_key}", sink="output"
         )
 
         state = State()
@@ -93,7 +95,7 @@ class TestBasicNodeFunctionality:
 
     def test_empty_sink_list(self):
         """Test node behavior with empty sink list"""
-        node = Node(name="test_node", prompt_template="Test", sink=[])
+        node = Node(node_type="test_node", prompt_template="Test", sink=[])
 
         state = State()
         state["messages"] = []
@@ -103,8 +105,8 @@ class TestBasicNodeFunctionality:
 
     def test_state_type_tracking_chain(self):
         """Test node type tracking through multiple nodes"""
-        node1 = Node(name="node1", prompt_template="Test", sink="output1")
-        node2 = Node(name="node2", prompt_template="Test", sink="output2")
+        node1 = Node(node_type="node1", prompt_template="Test", sink="output1")
+        node2 = Node(node_type="node2", prompt_template="Test", sink="output2")
 
         state = State()
         state["messages"] = []
@@ -119,7 +121,7 @@ class TestBasicNodeFunctionality:
 
     def test_state_preservation(self):
         """Test that unrelated state data is preserved"""
-        node = Node(name="test_node", prompt_template="Test", sink="output")
+        node = Node(node_type="test_node", prompt_template="Test", sink="output")
 
         state = State()
         state["messages"] = []
@@ -132,7 +134,7 @@ class TestBasicNodeFunctionality:
 
     def test_state_immutability(self):
         """Test that original state is not modified"""
-        node = Node(name="test_node", prompt_template="Test", sink="output")
+        node = Node(node_type="test_node", prompt_template="Test", sink="output")
 
         original_state = State()
         original_state["messages"] = []
@@ -160,7 +162,9 @@ class TestNodeExecution:
 
     def test_basic_execution(self, basic_state):
         """Test basic node execution"""
-        node = Node(name="test_node", prompt_template="Test {input}", sink="output")
+        node = Node(
+            node_type="test_node", prompt_template="Test {input}", sink="output"
+        )
 
         result_state = node(basic_state, self.MockClient())
         assert result_state["output"] == "Test response"
@@ -173,7 +177,7 @@ class TestNodeExecution:
                 return ["Response 1", "Response 2"]
 
         node = Node(
-            name="test_node",
+            node_type="test_node",
             prompt_template="Test {input}",
             sink=["output1", "output2"],
         )
@@ -191,7 +195,7 @@ class TestNodeExecution:
                 return '{"key": "value"}'
 
         node = Node(
-            name="test_node",
+            node_type="test_node",
             prompt_template="Test {input}",
             sink="output",
             sink_format="json",
@@ -203,7 +207,7 @@ class TestNodeExecution:
     def test_invalid_sink_format(self):
         """Test handling of invalid sink format specification"""
         node = Node(
-            name="test_node",
+            node_type="test_node",
             prompt_template="Test",
             sink="output",
             sink_format="invalid_format",
@@ -224,7 +228,7 @@ class TestNodeExecution:
     def test_mismatched_sink_response(self):
         """Test handling of mismatched sink and response count"""
         node = Node(
-            name="test_node", prompt_template="Test", sink=["output1", "output2"]
+            node_type="test_node", prompt_template="Test", sink=["output1", "output2"]
         )
 
         state = State()
@@ -234,6 +238,160 @@ class TestNodeExecution:
             ValueError, match="Number of responses .* doesn't match number of sink"
         ):
             node(state, lambda **k: ["single_response"])
+
+
+# Expression Evaluation Tests
+class TestExpressionEvaluation:
+    @pytest.fixture
+    def sample_state(self):
+        class SampleState(State):
+            items: List[str]
+            numbers: np.ndarray
+            text: str
+            data: Dict[str, Any]
+            key: str
+
+        state = SampleState()
+        state["messages"] = []
+        state["items"] = ["a", "b", "c", "d"]
+        state["numbers"] = np.array([1, 2, 3, 4, 5])
+        state["text"] = "Hello World"
+        state["data"] = {"name": "John", "age": 30}
+        state["key"] = "name"
+        return state
+
+    def test_basic_indexing(self, sample_state):
+        """Test basic list indexing"""
+        node = Node(
+            node_type="test_node",
+            prompt_template="First: {items[0]}, Last: {items[-1]}",
+            sink="output",
+        )
+
+        result_state = node(sample_state, lambda **k: "response")
+        assert "First: a, Last: d" in result_state["messages"][-1]["content"]
+
+    def test_list_slicing(self, sample_state):
+        """Test list slicing operations"""
+        node = Node(
+            node_type="test_node",
+            prompt_template="Slice: {items[1:3]}, Reverse: {items[::-1]}",
+            sink="output",
+        )
+
+        result_state = node(sample_state, lambda **k: "response")
+        assert (
+            "Slice: ['b', 'c'], Reverse: ['d', 'c', 'b', 'a']"
+            in result_state["messages"][-1]["content"]
+        )
+
+    def test_string_methods(self, sample_state):
+        """Test string method calls"""
+        node = Node(
+            node_type="test_node",
+            prompt_template="""
+            Upper: {text.upper()}
+            Lower: {text.lower()}
+            Title: {text.title()}
+            Strip: {text.strip()}
+            """,
+            sink="output",
+        )
+
+        result_state = node(sample_state, lambda **k: "response")
+        message = result_state["messages"][-1]["content"]
+        assert "Upper: HELLO WORLD" in message
+        assert "Lower: hello world" in message
+        assert "Title: Hello World" in message
+
+    def test_built_in_functions(self, sample_state):
+        """Test allowed built-in function calls"""
+        node = Node(
+            node_type="test_node",
+            prompt_template="""
+            Length: {len(items)}
+            Maximum: {max(numbers)}
+            Minimum: {min(numbers)}
+            Sum: {sum(numbers)}
+            Absolute: {abs(-42)}
+            """,
+            sink="output",
+        )
+
+        result_state = node(sample_state, lambda **k: "response")
+        message = result_state["messages"][-1]["content"]
+        assert "Length: 4" in message
+        assert "Maximum: 5" in message
+        assert "Minimum: 1" in message
+        assert "Sum: 15" in message
+        assert "Absolute: 42" in message
+
+    def test_dict_access(self, sample_state):
+        """Test dictionary access methods"""
+        node = Node(
+            node_type="test_node",
+            prompt_template="""
+            Direct key: {data['name']}
+            Variable key: {data[key]}
+            """,
+            sink="output",
+        )
+
+        result_state = node(sample_state, lambda **k: "response")
+        message = result_state["messages"][-1]["content"]
+        assert "Direct key: John" in message
+        assert "Variable key: John" in message
+
+    def test_type_conversions(self, sample_state):
+        """Test type conversion functions"""
+        sample_state["value"] = "42"
+        node = Node(
+            node_type="test_node",
+            prompt_template="""
+            Integer: {int(value)}
+            Float: {float(value)}
+            String: {str(numbers[0])}
+            """,
+            sink="output",
+        )
+
+        result_state = node(sample_state, lambda **k: "response")
+        message = result_state["messages"][-1]["content"]
+        assert "Integer: 42" in message
+        assert "Float: 42.0" in message
+        assert "String: 1" in message
+
+    def test_invalid_expressions(self, sample_state):
+        """Test error handling for invalid expressions"""
+        # Test invalid function
+        with pytest.raises(ValueError, match="Function not allowed: print"):
+            node = Node(
+                node_type="test_node", prompt_template="{print(text)}", sink="output"
+            )
+            node(sample_state, lambda **k: "response")
+
+        # Test invalid method
+        with pytest.raises(ValueError, match="String method not allowed: split"):
+            node = Node(
+                node_type="test_node", prompt_template="{text.split()}", sink="output"
+            )
+            node(sample_state, lambda **k: "response")
+
+        # Test invalid index
+        with pytest.raises(ValueError):
+            node = Node(
+                node_type="test_node", prompt_template="{items[10]}", sink="output"
+            )
+            node(sample_state, lambda **k: "response")
+
+        # Test invalid key
+        with pytest.raises(ValueError):
+            node = Node(
+                node_type="test_node",
+                prompt_template="{data['invalid_key']}",
+                sink="output",
+            )
+            node(sample_state, lambda **k: "response")
 
 
 # Pre/Post Processing Tests
@@ -254,7 +412,7 @@ class TestPrePostProcessing:
             return state
 
         node = Node(
-            name="test_node",
+            node_type="test_node",
             prompt_template="Test {input}",
             sink="output",
             pre_process=pre_process,
@@ -278,7 +436,7 @@ class TestPrePostProcessing:
             return None
 
         node = Node(
-            name="test_node",
+            node_type="test_node",
             prompt_template="Test {input}",
             sink="output",
             pre_process=pre_process,
@@ -305,7 +463,9 @@ class TestSourceMapping:
 
     def test_dict_source_mapping(self, state_with_mapping):
         """Test node with source key mapping"""
-        node = Node(name="test_node", prompt_template="Test {value}", sink="output")
+        node = Node(
+            node_type="test_node", prompt_template="Test {value}", sink="output"
+        )
 
         result_state = node(
             state_with_mapping,
@@ -316,7 +476,9 @@ class TestSourceMapping:
 
     def test_string_source_mapping(self, state_with_mapping):
         """Test node with string source mapping"""
-        node = Node(name="test_node", prompt_template="Test {source}", sink="output")
+        node = Node(
+            node_type="test_node", prompt_template="Test {source}", sink="output"
+        )
 
         result_state = node(
             state_with_mapping, lambda **k: "response", source="input_key"
@@ -325,7 +487,9 @@ class TestSourceMapping:
 
     def test_invalid_source_mapping(self):
         """Test handling of invalid source mapping"""
-        node = Node(name="test_node", prompt_template="Test {value}", sink="output")
+        node = Node(
+            node_type="test_node", prompt_template="Test {value}", sink="output"
+        )
 
         state = State()
         state["messages"] = []
@@ -353,7 +517,7 @@ class TestVLMIntegration:
     def test_vlm_execution(self):
         """Test node execution with VLM client"""
         node = Node(
-            name="test_vlm_node",
+            node_type="test_vlm_node",
             prompt_template="Describe this image",
             sink="output",
             image_keys=["image_path"],
@@ -378,7 +542,7 @@ class TestVLMIntegration:
     def test_vlm_multiple_images(self):
         """Test VLM node with multiple image inputs"""
         node = Node(
-            name="test_vlm_node",
+            node_type="test_vlm_node",
             prompt_template="Describe these images",
             sink="output",
             image_keys=["image1", "image2"],
@@ -410,7 +574,7 @@ class TestVLMIntegration:
     def test_vlm_missing_image(self):
         """Test VLM node execution without required image"""
         node = Node(
-            name="test_vlm_node",
+            node_type="test_vlm_node",
             prompt_template="Describe this image",
             sink="output",
             image_keys=["image_path"],
@@ -425,7 +589,7 @@ class TestVLMIntegration:
     def test_vlm_invalid_image_path(self):
         """Test VLM node with invalid image path"""
         node = Node(
-            name="test_vlm_node",
+            node_type="test_vlm_node",
             prompt_template="Test",
             sink="output",
             image_keys=["image"],
@@ -434,7 +598,7 @@ class TestVLMIntegration:
         state = State()
         state["messages"] = []
 
-        with pytest.raises(TypeError, match="path should be string"):
+        with pytest.raises(TypeError, match="should be string"):
             node(state, self.MockVLMClient(), image=None)
 
 
@@ -443,7 +607,7 @@ class TestDecorators:
     def test_as_node_decorator(self):
         """Test @as_node decorator functionality"""
 
-        @as_node("test_func", ["output"])
+        @as_node(["output"])
         def test_function(input_value):
             return f"Processed {input_value}"
 
@@ -461,7 +625,7 @@ class TestDecorators:
             return f"{required_param}-{optional_param}"
 
         node = Node(
-            name="test_node",
+            node_type="test_node",
             prompt_template="",
             sink="output",
             custom_function=custom_func,
@@ -481,7 +645,7 @@ class TestDecorators:
             return required_arg
 
         node = Node(
-            name="test_node",
+            node_type="test_node",
             prompt_template="",
             sink="output",
             custom_function=custom_func,
@@ -496,7 +660,7 @@ class TestDecorators:
     def test_as_node_with_multiple_sinks(self):
         """Test @as_node decorator with multiple output sinks"""
 
-        @as_node("multi_output", ["output1", "output2"])
+        @as_node(["output1", "output2"])
         def multi_output_function(value):
             return [f"First {value}", f"Second {value}"]
 
@@ -520,9 +684,7 @@ class TestDecorators:
             processed.append("post")
             return state
 
-        @as_node(
-            "test_func", ["output"], pre_process=pre_process, post_process=post_process
-        )
+        @as_node(["output"], pre_process=pre_process, post_process=post_process)
         def test_function(value):
             processed.append("main")
             return f"Result: {value}"
@@ -538,7 +700,7 @@ class TestDecorators:
     def test_as_node_with_multiple_parameters(self):
         """Test @as_node decorator with function having multiple parameters"""
 
-        @as_node("multi_param", ["output"])
+        @as_node(["output"])
         def multi_param_function(param1, param2, param3="default"):
             return f"{param1}-{param2}-{param3}"
 
@@ -553,20 +715,20 @@ class TestDecorators:
     def test_as_node_as_function_flag(self):
         """Test @as_node decorator with as_function flag"""
 
-        @as_node("test_func", ["output"], as_function=True)
+        @as_node(["output"], as_function=True)
         def test_function(value):
             return f"Processed {value}"
 
         assert callable(test_function)
-        assert hasattr(test_function, "name")
+        assert hasattr(test_function, "node_type")
         assert hasattr(test_function, "sink")
-        assert test_function.name == "test_func"
+        assert test_function.node_type == "test_function"
         assert test_function.sink == ["output"]
 
     def test_as_node_error_handling(self):
         """Test @as_node decorator error handling for missing parameters"""
 
-        @as_node("error_test", ["output"])
+        @as_node(["output"])
         def error_function(required_param):
             return f"Value: {required_param}"
 

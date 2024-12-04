@@ -45,9 +45,16 @@ POSSIBILITY OF SUCH DAMAGE.
 
 ### Initial Author <2024>: Xiangyu Yin
 
-from typing import TypedDict, List, Dict, Union
+import json
+import logging
+import numpy as np
 
-StateBaseT = Union[str, int, float, bool]
+logger = logging.getLogger(__name__)
+from typing import TypedDict, List, Dict, Union, Any, get_origin, get_args
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+import msgpack
+
+StateBaseT = Union[str, int, float, bool, np.ndarray]
 
 """
 State management module for nodeology.
@@ -60,6 +67,7 @@ class State(TypedDict):
     Base state class representing the core state structure.
     Contains node information, input/output data, and message history.
     """
+
     current_node_type: str
     previous_node_type: str
     human_input: str
@@ -68,69 +76,79 @@ class State(TypedDict):
     messages: List[dict]
 
 
+def _split_by_top_level_comma(s: str) -> List[str]:
+    """Helper function to split by comma while respecting brackets"""
+    parts = []
+    current = []
+    bracket_count = 0
+
+    for char in s:
+        if char == "[":
+            bracket_count += 1
+        elif char == "]":
+            bracket_count -= 1
+        elif char == "," and bracket_count == 0:
+            parts.append("".join(current).strip())
+            current = []
+            continue
+        current.append(char)
+
+    if current:
+        parts.append("".join(current).strip())
+    return parts
+
+
 def _resolve_state_type(type_str: str):
     """
     Resolve string representations of types to actual Python types.
-    
-    Supports basic types (str, int, float, bool), List, Dict, and Union types.
-    Includes caching for performance optimization.
-    
-    Args:
-        type_str (str): String representation of the type (e.g., "str", "List[int]")
-        
-    Returns:
-        type: Resolved Python type
-        
-    Raises:
-        ValueError: If type string is malformed or unsupported
     """
-    # Add caching to avoid repeated resolution
     if not hasattr(_resolve_state_type, "_cache"):
         _resolve_state_type._cache = {}
 
     if type_str in _resolve_state_type._cache:
         return _resolve_state_type._cache[type_str]
 
-    # Add error handling for malformed type strings
     try:
         # Handle basic types
-        if type_str in ("str", "int", "float", "bool"):
+        if type_str in (
+            "str",
+            "int",
+            "float",
+            "bool",
+            "dict",
+            "list",
+            "bytes",
+            "tuple",
+            "ndarray",
+        ):
+            if type_str == "ndarray":
+                return np.ndarray
             return eval(type_str)
-        # Handle List types
-        elif type_str.startswith("List[") and type_str.endswith("]"):
+
+        if type_str.startswith("List[") and type_str.endswith("]"):
             inner_type = type_str[5:-1]
             return List[_resolve_state_type(inner_type)]
-        # Handle Dict types
-        elif type_str.startswith("Dict[") and type_str.endswith("]"):
-            starting_index = 5  # Position after 'Dict['
-            inner_str = type_str[starting_index:-1]  # Extract inner content
-            bracket_count = 0
-            split_pos = -1
-            for i, char in enumerate(inner_str):
-                if char == "[":
-                    bracket_count += 1
-                elif char == "]":
-                    bracket_count -= 1
-                elif char == "," and bracket_count == 0:
-                    split_pos = i
-                    break
 
-            if split_pos == -1:
+        elif type_str.startswith("Dict[") and type_str.endswith("]"):
+            inner_str = type_str[5:-1]
+            parts = _split_by_top_level_comma(inner_str)
+            if len(parts) != 2:
                 raise ValueError(f"Invalid Dict type format: {type_str}")
 
-            key_type_str = inner_str[:split_pos].strip()
-            value_type_str = inner_str[split_pos + 1 :].strip()
-
-            key_type = _resolve_state_type(key_type_str)
-            value_type = _resolve_state_type(value_type_str)
-
+            key_type = _resolve_state_type(parts[0])
+            value_type = _resolve_state_type(parts[1])
             return Dict[key_type, value_type]
-        # Handle Union types
+
         elif type_str.startswith("Union[") and type_str.endswith("]"):
-            types = [_resolve_state_type(t.strip()) for t in type_str[6:-1].split(",")]
+            inner_str = type_str[6:-1]
+            types = [
+                _resolve_state_type(t) for t in _split_by_top_level_comma(inner_str)
+            ]
             return Union[tuple(types)]
+
         else:
             raise ValueError(f"Unknown state type: {type_str}")
+
     except Exception as e:
         raise ValueError(f"Failed to resolve type '{type_str}': {str(e)}")
 
@@ -138,20 +156,29 @@ def _resolve_state_type(type_str: str):
 def _process_dict_state_def(state_def: Dict) -> tuple:
     """
     Process a dictionary-format state definition.
-    
+
+    Supports both formats:
+    - {'name': 'type'} format
+    - {'name': str, 'type': str} format
+
     Args:
-        state_def (Dict): Dictionary containing 'name' and 'type' keys
-        
+        state_def (Dict): Dictionary containing state definition
+
     Returns:
         tuple: (name, resolved_type)
-        
+
     Raises:
         ValueError: If state definition is missing required fields
     """
-    name = state_def.get("name")
-    type_str = state_def.get("type")
-    if not name or not type_str:
-        raise ValueError(f"Invalid state definition: {state_def}")
+    if len(state_def) == 1:
+        # Handle {'name': 'type'} format
+        name, type_str = next(iter(state_def.items()))
+    else:
+        # Handle {'name': str, 'type': str} format
+        name = state_def.get("name")
+        type_str = state_def.get("type")
+        if not name or not type_str:
+            raise ValueError(f"Invalid state definition: {state_def}")
 
     state_type = _resolve_state_type(type_str)
     return (name, state_type)
@@ -160,17 +187,17 @@ def _process_dict_state_def(state_def: Dict) -> tuple:
 def _process_list_state_def(state_def: List) -> List:
     """
     Process a list-format state definition.
-    
+
     Supports two formats:
     1. Single definition: [name, type_str]
     2. Multiple definitions: [[name1, type_str1], [name2, type_str2], ...]
-    
+
     Args:
         state_def (List): List containing state definitions
-        
+
     Returns:
         List[tuple]: List of (name, resolved_type) tuples
-        
+
     Raises:
         ValueError: If state definition format is invalid
     """
@@ -193,19 +220,19 @@ def _process_list_state_def(state_def: List) -> List:
 def process_state_definitions(state_defs: List, state_registry: dict):
     """
     Process state definitions from template format to internal format.
-    
+
     Supports multiple input formats:
-    - Dictionary format: {'name': str, 'type': str}
+    - Dictionary format: {'name': 'type'} or {'name': str, 'type': str}
     - List format: [name, type_str] or [[name1, type_str1], ...]
     - String format: References to pre-defined states in state_registry
-    
+
     Args:
         state_defs (List): List of state definitions in various formats
         state_registry (dict): Registry of pre-defined states
-        
+
     Returns:
         List[tuple]: List of processed (name, type) pairs
-        
+
     Raises:
         ValueError: If state definition format is invalid or state type is unknown
     """
@@ -222,6 +249,223 @@ def process_state_definitions(state_defs: List, state_registry: dict):
             else:
                 raise ValueError(f"Unknown state type: {state_def}")
         else:
-            raise ValueError(f"Invalid state definition format: {state_def}")
+            raise ValueError(
+                f"Invalid state definition format: {state_def}. Must be a string, "
+                "[name, type] list, or {'name': 'type'} dictionary"
+            )
 
     return processed_state_defs
+
+
+def _type_from_str(type_obj: type) -> str:
+    """
+    Convert a Python type object to a string representation that _resolve_state_type can parse.
+    """
+    # Add handling for numpy arrays
+    if type_obj is np.ndarray:
+        return "ndarray"
+
+    # Handle basic types
+    if type_obj in (str, int, float, bool, dict, list, bytes, tuple):
+        return type_obj.__name__
+
+    # Get the origin type
+    origin = get_origin(type_obj)
+    if origin is None:
+        # More explicit handling of unknown types
+        logger.warning(f"Unknown type {type_obj}, defaulting to None")
+        return None
+
+    # Handle List types
+    if origin is list or origin is List:
+        args = get_args(type_obj)
+        if not args:
+            return "list"  # Default to list if no type args
+        inner_type = _type_from_str(args[0])
+        if inner_type is None:
+            return "list"
+        return f"List[{inner_type}]"
+
+    # Handle Dict types
+    if origin is dict or origin is Dict:
+        args = get_args(type_obj)
+        if not args or len(args) != 2:
+            return "dict"  # Default if no/invalid type args
+        key_type = _type_from_str(args[0])  # Recursive call for key type
+        value_type = _type_from_str(args[1])  # Recursive call for value type
+        if key_type is None or value_type is None:
+            return "dict"
+        return f"Dict[{key_type}, {value_type}]"
+
+    # Handle Union types
+    if origin is Union:
+        args = get_args(type_obj)
+        if not args:
+            return "tuple"
+        types = [_type_from_str(arg) for arg in args]
+        if any(t is None for t in types):
+            return "tuple"
+        return f"Union[{','.join(types)}]"
+
+    # Default case
+    return "str"
+
+
+class StateEncoder(json.JSONEncoder):
+    """Custom JSON encoder for serializing workflow states."""
+
+    def default(self, obj):
+        try:
+            if isinstance(obj, np.ndarray):
+                return {
+                    "__type__": "ndarray",
+                    "data": obj.tolist(),
+                    "dtype": str(obj.dtype),
+                }
+            if hasattr(obj, "to_dict"):
+                return obj.to_dict()
+            if isinstance(obj, bytes):
+                return obj.decode("utf-8")
+            if isinstance(obj, set):
+                return list(obj)
+            if hasattr(obj, "__dict__"):
+                return obj.__dict__
+            return super().default(obj)
+        except TypeError as e:
+            logger.warning(f"Could not serialize object of type {type(obj)}: {str(e)}")
+            return str(obj)
+
+
+class NumpyJsonPlusSerializer(JsonPlusSerializer):
+    NDARRAY_EXT_TYPE = 42  # Ensure this code doesn't conflict with other ExtTypes
+
+    def _default(self, obj: Any) -> Union[str, Dict[str, Any]]:
+        if isinstance(obj, np.ndarray):
+            return {
+                "lc": 2,
+                "type": "ndarray",
+                "data": obj.tolist(),
+                "dtype": str(obj.dtype),
+            }
+        return super()._default(obj)
+
+    def _reviver(self, value: Dict[str, Any]) -> Any:
+        if value.get("lc", None) == 2 and value.get("type", None) == "ndarray":
+            return np.array(value["data"], dtype=value["dtype"])
+        return super()._reviver(value)
+
+    # Override dumps_typed to use instance method _msgpack_enc
+    def dumps_typed(self, obj: Any) -> tuple[str, bytes]:
+        if isinstance(obj, bytes):
+            return "bytes", obj
+        elif isinstance(obj, bytearray):
+            return "bytearray", obj
+        else:
+            try:
+                return "msgpack", self._msgpack_enc(obj)
+            except UnicodeEncodeError:
+                return "json", self.dumps(obj)
+
+    # Provide instance-level _msgpack_enc
+    def _msgpack_enc(self, data: Any) -> bytes:
+        enc = msgpack.Packer(default=self._msgpack_default)
+        return enc.pack(data)
+
+    # Provide instance-level _msgpack_default
+    def _msgpack_default(self, obj: Any) -> Any:
+        if isinstance(obj, np.ndarray):
+            # Prepare metadata for ndarray
+            metadata = {
+                "dtype": str(obj.dtype),
+                "shape": obj.shape,
+            }
+            metadata_packed = msgpack.packb(metadata, use_bin_type=True)
+            data_packed = obj.tobytes()
+            combined = metadata_packed + data_packed
+            return msgpack.ExtType(self.NDARRAY_EXT_TYPE, combined)
+        elif isinstance(obj, np.number):
+            # Handle NumPy scalar types
+            return obj.item()
+        return super()._msgpack_default(obj)
+
+    # Provide instance-level loads_typed
+    def loads_typed(self, data: tuple[str, bytes]) -> Any:
+        type_, data_ = data
+        if type_ == "bytes":
+            return data_
+        elif type_ == "bytearray":
+            return bytearray(data_)
+        elif type_ == "json":
+            return self.loads(data_)
+        elif type_ == "msgpack":
+            return msgpack.unpackb(
+                data_, ext_hook=self._msgpack_ext_hook, strict_map_key=False
+            )
+        else:
+            raise NotImplementedError(f"Unknown serialization type: {type_}")
+
+    # Provide instance-level _msgpack_ext_hook
+    def _msgpack_ext_hook(self, code: int, data: bytes) -> Any:
+        if code == self.NDARRAY_EXT_TYPE:
+            # Unpack metadata
+            unpacker = msgpack.Unpacker(use_list=False, raw=False)
+            unpacker.feed(data)
+            metadata = unpacker.unpack()
+            buffer_offset = unpacker.tell()
+            array_data = data[buffer_offset:]
+            array = np.frombuffer(array_data, dtype=metadata["dtype"])
+            array = array.reshape(metadata["shape"])
+            return array
+        else:
+            return super()._msgpack_ext_hook(code, data)
+
+
+if __name__ == "__main__":
+    serializer = NumpyJsonPlusSerializer()
+    original_data = {
+        "array": np.array([[1, 2, 3], [4, 5, 6]], dtype=np.float64),
+        "scalar": np.float32(7.5),
+        "message": "Test serialization",
+        "nested": {
+            "array": np.array([[1, 2, 3], [4, 5, 6]], dtype=np.float64),
+            "scalar": np.float32(7.5),
+            "list_of_arrays": [
+                np.array([[1, 2, 3], [4, 5, 6]], dtype=np.float64),
+                np.array([[7, 8, 9], [10, 11, 12]], dtype=np.float64),
+            ],
+        },
+    }
+
+    # Serialize the data
+    _, serialized = serializer.dumps_typed(original_data)
+    # Deserialize the data
+    deserialized_data = serializer.loads_typed(("msgpack", serialized))
+
+    # Assertions
+    assert isinstance(deserialized_data["array"], np.ndarray)
+    assert np.array_equal(deserialized_data["array"], original_data["array"])
+    assert isinstance(deserialized_data["scalar"], float)
+    assert deserialized_data["scalar"] == float(original_data["scalar"])
+    assert deserialized_data["message"] == original_data["message"]
+    assert isinstance(deserialized_data["nested"]["array"], np.ndarray)
+    assert np.array_equal(
+        deserialized_data["nested"]["array"], original_data["nested"]["array"]
+    )
+    assert isinstance(deserialized_data["nested"]["scalar"], float)
+    assert deserialized_data["nested"]["scalar"] == float(
+        original_data["nested"]["scalar"]
+    )
+    assert isinstance(deserialized_data["nested"]["list_of_arrays"], list)
+    assert all(
+        isinstance(arr, np.ndarray)
+        for arr in deserialized_data["nested"]["list_of_arrays"]
+    )
+    assert all(
+        np.array_equal(arr, original_arr)
+        for arr, original_arr in zip(
+            deserialized_data["nested"]["list_of_arrays"],
+            original_data["nested"]["list_of_arrays"],
+        )
+    )
+
+    print("Serialization and deserialization test passed.")

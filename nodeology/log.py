@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 
 def setup_logging(log_dir, log_name, debug_mode=False, base_dir=None):
     """Configure the logging system with console and/or file handlers.
-    
+
     Args:
         log_dir (str): Directory where log files will be stored
         log_name (str): Name of the log file (without extension)
@@ -73,7 +73,7 @@ def setup_logging(log_dir, log_name, debug_mode=False, base_dir=None):
 
     if debug_mode:
         # Debug mode configuration - console only
-        console_handler.setLevel(logging.DEBUG)
+        console_handler.setLevel(logging.LOGONLY)
         console_format = logging.Formatter(
             "%(asctime)s - %(levelname)s - %(name)s - %(message)s"
         )
@@ -136,12 +136,12 @@ def cleanup_logging():
 # https://stackoverflow.com/questions/2183233/how-to-add-a-custom-loglevel-to-pythons-logging-facility/35804945#35804945
 def add_logging_level(levelName, levelNum, methodName=None):
     """Add a new logging level to the logging module.
-    
+
     Args:
         levelName (str): Name of the new level (e.g., 'TRACE')
         levelNum (int): Numeric value for the level
         methodName (str, optional): Method name to add. Defaults to levelName.lower()
-    
+
     Raises:
         AttributeError: If levelName or methodName already exists
     """
@@ -171,12 +171,13 @@ def add_logging_level(levelName, levelNum, methodName=None):
     setattr(logging, methodName, logToRoot)
 
 
-def log_print_color(text, color=""):
+def log_print_color(text, color="", print_to_console=True):
     """Print colored text to console and log it to file.
-    
+
     Args:
         text (str): Text to print and log
         color (str): Color name ('green', 'red', 'blue', 'yellow', or '' for white)
+        print_to_console (bool): If True, print the text to console
     """
     # Define color codes as constants at the top of the function
     COLOR_CODES = {
@@ -184,11 +185,12 @@ def log_print_color(text, color=""):
         "red": "\033[91m",
         "blue": "\033[94m",
         "yellow": "\033[93m",
-        "": "\033[97m"  # default white
+        "": "\033[97m",  # default white
     }
-    
+
     # Get color code from dictionary, defaulting to white
     ansi_code = COLOR_CODES.get(color, COLOR_CODES[""])
-    
-    print(ansi_code + text + "\033[0m")
+
+    if print_to_console:
+        print(ansi_code + text + "\033[0m")
     logger.logonly(text)

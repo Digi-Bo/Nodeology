@@ -85,7 +85,6 @@ def execute_command(command, use_shell=True, capture_output_func=_capture_result
 
 
 @as_node(
-    name="code_executor",
     sink=["result_path", "execution_success", "retry_count", "execution_error"],
 )
 def execute_code(
@@ -110,7 +109,7 @@ def execute_code(
 
 
 code_rewriter = Node(
-    name="code_rewriter",
+    node_type="code_rewriter",
     prompt_template="""# EXAMPLE CODE:
 {code_example}
 
@@ -166,7 +165,7 @@ code_rewriter.post_process = code_rewriter_post_process
 
 
 error_corrector = Node(
-    name="error_corrector",
+    node_type="error_corrector",
     prompt_template="""# CODE:
 {code}
 
@@ -203,7 +202,7 @@ error_corrector.post_process = error_corrector_post_process
 
 
 code_tweaker = Node(
-    name="code_tweaker",
+    node_type="code_tweaker",
     prompt_template="""# CODE:
 {code}
 
@@ -236,7 +235,7 @@ code_tweaker.post_process = code_tweaker_post_process
 
 
 code_explainer = Node(
-    name="code_explainer",
+    node_type="code_explainer",
     prompt_template="""# CODE:
 {code}
 
@@ -268,7 +267,7 @@ code_explainer.post_process = code_explainer_post_process
 
 
 code_designer = Node(
-    name="code_designer",
+    node_type="code_designer",
     prompt_template="""# EXAMPLE CODE:
 {code_example}
 

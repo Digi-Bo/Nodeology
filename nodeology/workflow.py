@@ -46,13 +46,16 @@ POSSIBILITY OF SUCH DAMAGE.
 ### Initial Author <2024>: Xiangyu Yin
 
 import os, logging
-import json, yaml
+import json, yaml, re
+import inspect
 import getpass
 from datetime import datetime
 from jsonschema import validate
-from typing import Dict, Any, Optional, List, Union
+from typing import Dict, Any, Optional, List, Union, Callable
 import ast, operator, traceback
 from abc import ABC, abstractmethod
+from collections import OrderedDict
+import numpy as np
 
 # Ensure that TypedDict is imported correctly for all Python versions
 try:
@@ -63,6 +66,7 @@ except ImportError:
 from langgraph.graph import StateGraph, END
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import StateSnapshot
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import MemorySaver
 
 from nodeology.log import (
@@ -72,14 +76,21 @@ from nodeology.log import (
     setup_logging,
 )
 from nodeology.client import get_client, LLM_Client, VLM_Client
-from nodeology.state import State, process_state_definitions, _resolve_state_type
+from nodeology.state import (
+    State,
+    StateEncoder,
+    NumpyJsonPlusSerializer,
+    process_state_definitions,
+    _resolve_state_type,
+    _type_from_str,
+)
 from nodeology.node import Node
 from nodeology.prebuilt import prebuilt_states, prebuilt_nodes
 
 
 class Workflow(ABC):
     """Abstract base class for workflow management.
-    
+
     The Workflow class provides a framework for creating and managing stateful workflows
     that combine language models, vision models, and custom processing nodes. It handles
     state management, logging, error recovery, and workflow execution.
@@ -121,48 +132,12 @@ class Workflow(ABC):
         # Create and run workflow
         workflow = MyWorkflow(
             name="example",
-            llm_name="gpt-4",
+            llm_name="gpt-4o",
             save_artifacts=True
         )
         result = workflow.run()
         ```
     """
-
-    class StateEncoder(json.JSONEncoder):
-        """Custom JSON encoder for serializing workflow states.
-        
-        Handles special data types and objects that aren't JSON-serializable by default:
-        - Objects with to_dict() methods
-        - bytes objects (converted to UTF-8 strings)
-        - set objects (converted to lists)
-        - Objects with __dict__ attributes
-        
-        Args:
-            obj: Object to serialize
-            
-        Returns:
-            JSON-serializable representation of the object
-            
-        Raises:
-            TypeError: If object cannot be serialized
-        """
-        def default(self, obj):
-            try:
-                if hasattr(obj, "to_dict"):
-                    return obj.to_dict()
-                if hasattr(obj, "__dict__"):
-                    # Handle common types that might need special treatment
-                    if isinstance(obj, bytes):
-                        return obj.decode("utf-8")
-                    if isinstance(obj, set):
-                        return list(obj)
-                    return obj.__dict__
-                return super().default(obj)
-            except TypeError as e:
-                logger.warning(
-                    f"Could not serialize object of type {type(obj)}: {str(e)}"
-                )
-                return str(obj)
 
     def __init__(
         self,
@@ -174,6 +149,7 @@ class Workflow(ABC):
         save_artifacts: bool = True,
         debug_mode: bool = False,
         max_history: int = 1000,
+        checkpointer: Union[BaseCheckpointSaver, str] = "memory",
         **kwargs,
     ) -> None:
         """Initialize workflow
@@ -219,6 +195,7 @@ class Workflow(ABC):
             ]
         )
         self.save_artifacts = save_artifacts
+        self.checkpointer = checkpointer
         self.debug_mode = debug_mode
         self.max_history = max_history
         self.kwargs = kwargs
@@ -233,6 +210,9 @@ class Workflow(ABC):
 
         # Setup logging and initialize workflow
         self._setup_logging()
+        self._node_configs = {}
+        self._entry_point = None
+        self._interrupt_before = []
         self.create_workflow()
         self.initialize()
 
@@ -259,9 +239,9 @@ class Workflow(ABC):
 
     def _setup_logging(self, base_dir: Optional[str] = None) -> None:
         """Setup workflow-specific logging configuration.
-        
+
         Configures logging with custom levels and file handlers.
-        
+
         Args:
             base_dir: Optional base directory for log files
         """
@@ -294,10 +274,10 @@ class Workflow(ABC):
 
     def save_state(self, current_state: Optional[StateSnapshot] = None) -> None:
         """Save the current workflow state to history and optionally to disk.
-        
+
         Args:
             current_state: State snapshot to save (fetched if None)
-            
+
         Maintains a rolling history window and saves state files if save_artifacts is enabled.
         """
         try:
@@ -310,7 +290,7 @@ class Workflow(ABC):
 
             # Maintain rolling history window
             if len(self.state_history) > self.max_history:
-                self.state_history = self.state_history[-self.max_history:]
+                self.state_history = self.state_history[-self.max_history :]
 
             # Save state file if enabled
             if self.save_artifacts and not self.debug_mode:
@@ -318,7 +298,7 @@ class Workflow(ABC):
                     self.log_path, f"state_{self.state_index}.json"
                 )
                 with open(state_file, "w", encoding="utf-8") as f:
-                    json.dump(current_state_values, f, indent=2, cls=self.StateEncoder)
+                    json.dump(current_state_values, f, indent=2, cls=StateEncoder)
 
             self.state_index += 1
 
@@ -329,10 +309,10 @@ class Workflow(ABC):
 
     def load_state(self, state_index: int) -> None:
         """Load a previous workflow state by index.
-        
+
         Args:
             state_index: Index of state to load
-            
+
         Raises:
             ValueError: If state file not found or schema mismatch
         """
@@ -369,15 +349,15 @@ class Workflow(ABC):
         as_node: Optional[Node] = None,
     ) -> None:
         """Update the workflow state with new values and/or human input.
-        
+
         Handles nested updates, type validation, and error recovery.
-        
+
         Args:
             values: Dictionary of state values to update
             current_state: Current state snapshot (fetched if None)
             human_input: Human input to add to messages/conversation
             as_node: Node to attribute the update to
-            
+
         Raises:
             TypeError: If provided values don't match schema types
             ValueError: If invalid fields are provided in debug mode
@@ -468,7 +448,7 @@ class Workflow(ABC):
 
     def _create_checkpoint(self) -> None:
         """Create a checkpoint of the current workflow state.
-        
+
         Saves the current state to a checkpoint file if save_artifacts is enabled.
         """
         if self.save_artifacts and not self.debug_mode:
@@ -476,14 +456,14 @@ class Workflow(ABC):
             checkpoint_file = os.path.join(self.log_path, "checkpoint.json")
             try:
                 with open(checkpoint_file, "w", encoding="utf-8") as f:
-                    json.dump(state.values, f, indent=2, cls=self.StateEncoder)
+                    json.dump(state.values, f, indent=2, cls=StateEncoder)
                 logger.debug("Created checkpoint")
             except Exception as e:
                 logger.error(f"Failed to create checkpoint: {str(e)}")
 
     def _restore_last_valid_state(self):
         """Attempt to restore the workflow to the last valid state.
-        
+
         First tries recent history states, then falls back to checkpoint.
         Raises RuntimeError if no valid state can be restored.
         """
@@ -516,22 +496,347 @@ class Workflow(ABC):
         """Create the workflow graph structure"""
         pass
 
+    def add_node(
+        self, name: str, node: Optional[Node] = None, client_type: str = "llm", **kwargs
+    ):
+        """Add a node to the workflow with simplified syntax"""
+        # If node has image_keys, automatically set client_type to vlm
+        if node and hasattr(node, "image_keys") and node.image_keys:
+            client_type = "vlm"
+            kwargs["image_keys"] = node.image_keys
+
+        # Initialize configurations if needed
+        if not hasattr(self, "_workflow_configs"):
+            self._workflow_configs = {
+                "nodes": {},
+                "edges": [],
+                "conditionals": [],
+                "entry": None,
+            }
+        if not hasattr(self, "_node_configs"):
+            self._node_configs = {}
+
+        # Store workflow configuration
+        workflow_config = {
+            "client_type": client_type,
+            "node": node,
+            "kwargs": kwargs.copy(),
+        }
+        self._workflow_configs["nodes"][name] = workflow_config
+
+        # Keep original template configuration structure
+        node_config = {
+            "client_type": client_type,
+        }
+
+        if node is not None:
+            if node.prompt_template is not None and len(node.prompt_template) > 0:
+                node_config.update(
+                    {
+                        "type": "prompt",
+                        "template": node.prompt_template,
+                    }
+                )
+            else:
+                node_config["type"] = name
+
+            if node.sink:
+                node_config["sink"] = node.sink
+            if node.sink_format:
+                node_config["sink_format"] = node.sink_format
+            if node.image_keys:
+                node_config["image_keys"] = node.image_keys
+                node_config["client_type"] = "vlm"
+
+        # Handle special kwargs as before
+        processed_kwargs = {}
+        if kwargs:
+            for k, v in kwargs.items():
+                if k in node_config:
+                    pass
+                elif callable(v):
+                    processed_kwargs[k] = "${" + k + "}"
+                else:
+                    processed_kwargs[k] = v
+
+            if processed_kwargs:
+                node_config["kwargs"] = processed_kwargs
+
+        self._node_configs[name] = node_config
+
+    def add_flow(self, from_node: str, to_node: str):
+        """Add a simple edge between nodes"""
+        if not hasattr(self, "_workflow_configs"):
+            self._workflow_configs = {
+                "nodes": {},
+                "edges": [],
+                "conditionals": [],
+                "entry": None,
+            }
+
+        # Store workflow edge configuration
+        self._workflow_configs["edges"].append({"from": from_node, "to": to_node})
+
+        # Keep original template configuration
+        self._node_configs[from_node]["next"] = to_node if to_node != END else "END"
+
+    def add_conditional_flow(
+        self,
+        from_node: str,
+        condition: Union[str, Callable[[dict], bool]],
+        then: str,
+        otherwise: str,
+    ):
+        """Add a conditional edge with simplified syntax"""
+        if not hasattr(self, "_workflow_configs"):
+            self._workflow_configs = {
+                "nodes": {},
+                "edges": [],
+                "conditionals": [],
+                "entry": None,
+            }
+
+        # Process condition for tracking
+        if isinstance(condition, str):
+            condition_str = condition
+
+            # Create a closure to avoid variable capture issues
+            def make_condition(cond_str):
+                return lambda state: state[cond_str]
+
+            condition_func = make_condition(condition)
+        elif callable(condition):
+            condition_src = inspect.getsource(condition).strip()
+
+            # Create a closure to avoid variable capture issues
+            def make_condition(cond):
+                return lambda state: cond(state)
+
+            condition_func = make_condition(condition)
+
+            if condition_src.startswith("lambda"):
+                # Extract just the lambda function definition using regex
+                lambda_pattern = r"lambda\s+[^:]+:\s*([^,\n]+)"
+                match = re.search(lambda_pattern, condition_src)
+                if match:
+                    condition_str = match.group(1).strip()
+                else:
+                    raise ValueError(
+                        f"Could not parse lambda condition: {condition_src}"
+                    )
+                # Replace state['var'], state["var"], state.get["var"] and state.get('var') with just var
+                condition_str = re.sub(r"state\['([^']+)'\]", r"\1", condition_str)
+                condition_str = re.sub(r'state\["([^"]+)"\]', r"\1", condition_str)
+                condition_str = re.sub(r'state\.get\("([^"]+)"\)', r"\1", condition_str)
+                condition_str = re.sub(r"state\.get\('([^']+)'\)", r"\1", condition_str)
+            else:
+                # For complex functions, use template variable for tracking
+                condition_str = "${" + condition.__name__ + "}"
+
+        # Store workflow conditional configuration
+        self._workflow_configs["conditionals"].append(
+            {
+                "from": from_node,
+                "condition": condition_func,
+                "then": then,
+                "otherwise": otherwise,
+            }
+        )
+
+        # Keep original template configuration
+        self._node_configs[from_node]["next"] = {
+            "condition": condition_str,
+            "then": "END" if then == END else then,
+            "otherwise": "END" if otherwise == END else otherwise,
+        }
+
+    def set_entry(self, node: str):
+        """Set the workflow entry point"""
+        if not hasattr(self, "_workflow_configs"):
+            self._workflow_configs = {
+                "nodes": {},
+                "edges": [],
+                "conditionals": [],
+                "entry": None,
+            }
+
+        self._workflow_configs["entry"] = node
+        self._entry_point = node  # Keep original entry point storage
+
+    def compile(
+        self,
+        interrupt_before: Optional[List[str]] = None,
+        checkpointer: Optional[Union[str, BaseCheckpointSaver]] = None,
+        auto_input_nodes: bool = True,
+    ):
+        """Compile the workflow with optional interrupt points and checkpointing"""
+        if not hasattr(self, "workflow"):
+            self.workflow = StateGraph(self.state_schema)
+
+        # Setup checkpointer
+        checkpointer = checkpointer if checkpointer else self.checkpointer
+        if checkpointer == "memory":
+            checkpointer = MemorySaver(serde=NumpyJsonPlusSerializer())
+        elif not isinstance(checkpointer, BaseCheckpointSaver):
+            raise ValueError(
+                "checkpointer must be 'memory' or a BaseCheckpointSaver instance"
+            )
+
+        # Track input nodes if auto creation is enabled
+        input_nodes = set()
+        node_mapping = {}  # Maps original nodes to their input nodes
+        added_nodes = set()  # Track nodes that have been added
+
+        if auto_input_nodes and interrupt_before:
+            # Create input nodes for interrupted nodes (avoiding duplicates)
+            for node_name in interrupt_before:
+                input_node_name = f"{node_name}_input"
+
+                # Skip if this input node was already created
+                if input_node_name not in added_nodes:
+                    input_nodes.add(input_node_name)
+                    node_mapping[node_name] = input_node_name
+                    # Add input node to workflow
+                    self.workflow.add_node(input_node_name, lambda state: state)
+                    added_nodes.add(input_node_name)
+
+        # First pass: Create all nodes from workflow configs
+        for node_name, config in self._workflow_configs["nodes"].items():
+            if node_name not in added_nodes:
+                # Create the actual node
+                node = config.get("node")
+                if node is None:
+                    self.workflow.add_node(node_name, lambda state: state)
+                else:
+                    # Select appropriate client
+                    client_type = config["client_type"].lower()
+                    if client_type == "llm":
+                        client = self.llm_client
+                    elif client_type == "vlm":
+                        if self.vlm_client is None:
+                            raise ValueError("VLM client not available")
+                        client = self.vlm_client
+                    else:
+                        raise ValueError(f"Invalid client_type: {client_type}")
+
+                    # Create wrapped function with client injection
+                    def wrapped_func(
+                        state,
+                        n=node,
+                        c=client,
+                        debug=self.debug_mode,
+                        k=config["kwargs"],
+                    ):
+                        return n(state, c, debug=debug, **k)
+
+                    self.workflow.add_node(node_name, wrapped_func)
+                    added_nodes.add(node_name)
+
+        # Second pass: Create all edges with proper routing
+        for edge in self._workflow_configs["edges"]:
+            from_node = edge["from"]
+            to_node = edge["to"]
+
+            if auto_input_nodes and interrupt_before:
+                # If the target node needs input, route through its input node
+                if to_node in interrupt_before and to_node != END:
+                    # Add edge from original source to target's input node
+                    self.workflow.add_edge(from_node, node_mapping[to_node])
+                    # Add edge from input node to actual target
+                    self.workflow.add_edge(node_mapping[to_node], to_node)
+                else:
+                    # Regular edge
+                    self.workflow.add_edge(
+                        from_node, END if to_node == END else to_node
+                    )
+            else:
+                # Regular edge without input node routing
+                self.workflow.add_edge(from_node, END if to_node == END else to_node)
+
+        # Third pass: Add conditional edges with proper routing
+        for config in self._workflow_configs["conditionals"]:
+            from_node = config["from"]
+            condition = config["condition"]
+            then_target = config["then"]
+            otherwise_target = config["otherwise"]
+
+            if auto_input_nodes and interrupt_before:
+                # Route targets through input nodes if needed
+                if then_target in interrupt_before and then_target != END:
+                    # Add edge from input node to actual target for 'then' branch
+                    self.workflow.add_edge(node_mapping[then_target], then_target)
+                    then_target = node_mapping[then_target]
+
+                if otherwise_target in interrupt_before and otherwise_target != END:
+                    # Add edge from input node to actual target for 'otherwise' branch
+                    self.workflow.add_edge(
+                        node_mapping[otherwise_target], otherwise_target
+                    )
+                    otherwise_target = node_mapping[otherwise_target]
+
+            # Use a function factory to create wrapped_condition_func
+            def make_wrapped_condition_func(condition):
+                if isinstance(condition, Callable):
+                    return lambda state: "then" if condition(state) else "otherwise"
+                elif isinstance(condition, str):
+                    return lambda state: (
+                        "then" if _eval_condition(condition, state) else "otherwise"
+                    )
+                else:
+                    raise ValueError(f"Invalid condition type: {type(condition)}")
+
+            wrapped_condition_func = make_wrapped_condition_func(condition)
+
+            self.workflow.add_conditional_edges(
+                from_node,
+                wrapped_condition_func,
+                {
+                    "then": END if then_target == END else then_target,
+                    "otherwise": END if otherwise_target == END else otherwise_target,
+                },
+            )
+
+        # Set entry point with proper routing
+        entry_point = self._workflow_configs["entry"]
+        if entry_point is None:
+            raise ValueError("No entry point set. Call set_entry first.")
+
+        if auto_input_nodes and interrupt_before and entry_point in interrupt_before:
+            # If entry point needs input, route through its input node
+            self.workflow.add_edge(node_mapping[entry_point], entry_point)
+            self.workflow.set_entry_point(node_mapping[entry_point])
+        else:
+            self.workflow.set_entry_point(entry_point)
+
+        # Store interrupt configuration and compile
+        self._interrupt_before = (
+            list(input_nodes) if auto_input_nodes else (interrupt_before or [])
+        )
+        self.graph = self.workflow.compile(
+            checkpointer=checkpointer, interrupt_before=self._interrupt_before
+        )
+
     def _validate_type(self, value: Any, expected_type: Any) -> bool:
         """Validate that a value matches the expected type.
-        
+
         Handles complex types including:
         - Union types
         - List types with element validation
         - Dict types with key/value validation
-        
+        - Numpy arrays
+
         Args:
             value: Value to validate
             expected_type: Type to validate against
-            
+
         Returns:
             bool: Whether the value matches the expected type
         """
         from typing import get_origin, get_args, Union
+
+        # Add numpy array handling
+        if expected_type is np.ndarray:
+            return isinstance(value, np.ndarray)
 
         origin_type = get_origin(expected_type)
 
@@ -622,12 +927,12 @@ class Workflow(ABC):
 
     def run(self, init_values: Optional[Dict] = None) -> Dict:
         """Run the workflow until completion or interruption.
-        
+
         Executes the workflow graph, handling human input and state management.
-        
+
         Args:
             init_values: Optional initial state values
-            
+
         Returns:
             Dict: Final workflow state values or error state
         """
@@ -683,10 +988,10 @@ class Workflow(ABC):
 
     def _should_exit(self, cmd_input: str) -> bool:
         """Check if a command should exit the workflow.
-        
+
         Args:
             cmd_input: Command string to check
-            
+
         Returns:
             bool: True if command matches any exit command
         """
@@ -694,13 +999,13 @@ class Workflow(ABC):
 
     def _get_human_input(self, mode: str = "cmd") -> str:
         """Get and log input from the user.
-        
+
         Args:
             mode: Input mode (currently only supports 'cmd')
-            
+
         Returns:
             str: User input
-            
+
         Raises:
             ValueError: If invalid input mode specified
         """
@@ -713,7 +1018,7 @@ class Workflow(ABC):
 
     def __enter__(self):
         """Context manager entry point.
-        
+
         Returns:
             Workflow: Self for use in with statement
         """
@@ -721,7 +1026,7 @@ class Workflow(ABC):
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit point with cleanup.
-        
+
         Creates final checkpoint and cleans up logging handlers.
         """
         try:
@@ -756,10 +1061,25 @@ class Workflow(ABC):
             if self.debug_mode:
                 raise
 
+    def to_yaml(self, output_path: Optional[str] = None) -> Dict:
+        """Export workflow configuration to YAML format.
+
+        Args:
+            output_path: Optional path to save YAML file. If not provided,
+                        returns dictionary representation only.
+
+        Returns:
+            Dict: Template configuration dictionary
+
+        Raises:
+            ValueError: If workflow configuration is invalid for export
+        """
+        return export_workflow_to_template(self, output_path)
+
 
 def _validate_template_structure(template: Dict) -> None:
     """Validate the basic structure of a workflow template against schema.
-    
+
     Required fields:
     - name: string
     - state_defs: array of state definitions
@@ -772,10 +1092,10 @@ def _validate_template_structure(template: Dict) -> None:
     - exit_commands: array of strings
     - intervene_before: array of strings
     - checkpointer: string
-    
+
     Args:
         template: Template dictionary to validate
-        
+
     Raises:
         ValueError: If template structure is invalid
     """
@@ -804,17 +1124,17 @@ def _validate_template_structure(template: Dict) -> None:
 
 def _validate_nodes(nodes: Dict, node_registry: Dict) -> None:
     """Validate node configurations in the template.
-    
+
     Checks:
     - Required fields presence
     - Node type validity
     - Prompt node specific configuration
     - Next/conditional logic validity
-    
+
     Args:
         nodes: Dictionary of node configurations
         node_registry: Dictionary of available node types
-        
+
     Raises:
         ValueError: If node configuration is invalid
     """
@@ -843,19 +1163,19 @@ def _validate_nodes(nodes: Dict, node_registry: Dict) -> None:
         elif isinstance(node_config["next"], dict):
             if node_config["next"].get("then") == "END":
                 node_config["next"]["then"] = END
-            if node_config["next"].get("else") == "END":
-                node_config["next"]["else"] = END
+            if node_config["next"].get("otherwise") == "END":
+                node_config["next"]["otherwise"] = END
 
         _validate_node_transitions(node_name, node_config["next"])
 
 
 def _validate_prompt_node(node_name: str, config: Dict) -> None:
     """Validate prompt node specific configuration.
-    
+
     Args:
         node_name: Name of the node
         config: Node configuration dictionary
-        
+
     Raises:
         ValueError: If prompt node configuration is invalid
     """
@@ -864,11 +1184,19 @@ def _validate_prompt_node(node_name: str, config: Dict) -> None:
         raise ValueError(f"Prompt node '{node_name}' missing 'template' field")
 
     # Validate optional image_keys field
-    if "image_keys" in config and not isinstance(config["image_keys"], list):
-        raise ValueError(f"Prompt node '{node_name}' image_keys must be a list")
+    if "image_keys" in config:
+        # Accept both string (single item) and list formats
+        if not isinstance(config["image_keys"], (str, list)):
+            raise ValueError(
+                f"Prompt node '{node_name}' image_keys must be a string or list"
+            )
+        # Convert string to list internally
+        if isinstance(config["image_keys"], str):
+            config["image_keys"] = [config["image_keys"]]
 
     # Validate sink field if present
     if "sink" in config:
+        # Accept both string (single item) and list formats
         if isinstance(config["sink"], str):
             config["sink"] = [config["sink"]]  # Convert single string to list
         elif not isinstance(config["sink"], list):
@@ -884,18 +1212,18 @@ def _validate_prompt_node(node_name: str, config: Dict) -> None:
 
 def _validate_condition_expr(expr: str) -> bool:
     """Validate a conditional expression for security and correctness.
-    
+
     Checks:
     - Python syntax validity
     - Allowed operations and functions
     - Security constraints
-    
+
     Args:
         expr: Condition expression string
-        
+
     Returns:
         bool: True if expression is valid
-        
+
     Raises:
         ValueError: If expression is invalid or contains forbidden operations
     """
@@ -990,13 +1318,13 @@ def _validate_condition_expr(expr: str) -> bool:
 
 def _validate_node_transitions(node_name: str, next_config: Union[str, Dict]) -> None:
     """Validate node transition configuration.
-    
+
     Checks transition configuration for both simple and conditional transitions.
-    
+
     Args:
         node_name: Name of the node being validated
         next_config: Transition configuration (string for simple, dict for conditional)
-        
+
     Raises:
         ValueError: If transition configuration is invalid
     """
@@ -1006,9 +1334,9 @@ def _validate_node_transitions(node_name: str, next_config: Union[str, Dict]) ->
             raise ValueError(
                 f"Conditional transition in node '{node_name}' missing 'condition'"
             )
-        if "then" not in next_config or "else" not in next_config:
+        if "then" not in next_config or "otherwise" not in next_config:
             raise ValueError(
-                f"Conditional transition in node '{node_name}' missing then/else paths"
+                f"Conditional transition in node '{node_name}' missing then/otherwise paths"
             )
 
         # Validate condition expression
@@ -1020,23 +1348,26 @@ def _validate_node_transitions(node_name: str, next_config: Union[str, Dict]) ->
 
 def _validate_state_definitions(state_defs: List, state_registry: Dict) -> None:
     """Validate state definitions in template.
-    
-    Supports both string references to registered states and tuple definitions.
-    
+
+    Supports multiple formats:
+    1. String references to registered states: ["HilpState", "CustomState"]
+    2. Tuple definitions: [["name", "type"], ["other", "str"]]
+    3. Dictionary definitions: [{"name": "type"}, {"other": "str"}]
+
     Args:
         state_defs: List of state definitions
         state_registry: Dictionary of available state types
-        
+
     Raises:
         ValueError: If state definitions are invalid
     """
     for state_def in state_defs:
         if isinstance(state_def, str):
-            # Validate reference to registered state
+            # Format 1: Validate reference to registered state
             if state_def not in state_registry:
                 raise ValueError(f"Unknown state type: {state_def}")
         elif isinstance(state_def, list) and len(state_def) == 2:
-            # Validate (name, type) tuple format
+            # Format 2: Validate (name, type) tuple format
             name, type_str = state_def
             if not isinstance(name, str):
                 raise ValueError(f"State name must be a string: {name}")
@@ -1044,23 +1375,35 @@ def _validate_state_definitions(state_defs: List, state_registry: Dict) -> None:
                 _resolve_state_type(type_str)
             except ValueError:
                 raise ValueError(f"Cannot resolve state type: {type_str}")
+        elif isinstance(state_def, dict) and len(state_def) == 1:
+            # Format 3: Validate {"name": "type"} dictionary format
+            name, type_str = next(iter(state_def.items()))
+            if not isinstance(name, str):
+                raise ValueError(f"State name must be a string: {name}")
+            try:
+                _resolve_state_type(type_str)
+            except ValueError:
+                raise ValueError(f"Cannot resolve state type: {type_str}")
         else:
-            raise ValueError(f"Invalid state definition format: {state_def}")
+            raise ValueError(
+                f"Invalid state definition format: {state_def}. Must be a string, "
+                "[name, type] list, or {'name': 'type'} dictionary"
+            )
 
 
 def _safe_read_template(template_path: str, node_registry: Dict, state_registry: Dict):
     """Safely load and perform initial validation of workflow template.
-    
+
     Performs basic structural validation before any variable interpolation.
-    
+
     Args:
         template_path: Path to YAML template file
         node_registry: Dictionary of available node types
         state_registry: Dictionary of available state types
-        
+
     Returns:
         Dict: Loaded template dictionary
-        
+
     Raises:
         ValueError: If template cannot be loaded or basic validation fails
     """
@@ -1101,18 +1444,18 @@ def _safe_read_template(template_path: str, node_registry: Dict, state_registry:
 
 def _eval_condition_expr(node, state, allowed_funcs, operators):
     """Evaluate a single AST node in a condition expression.
-    
+
     Recursively evaluates AST nodes while enforcing security constraints.
-    
+
     Args:
         node: AST node to evaluate
         state: Current workflow state
         allowed_funcs: Dictionary of allowed functions
         operators: Dictionary of allowed operators
-        
+
     Returns:
         Any: Result of evaluating the node
-        
+
     Raises:
         ValueError: If evaluation encounters forbidden operations
     """
@@ -1197,8 +1540,19 @@ def _eval_condition_expr(node, state, allowed_funcs, operators):
         raise ValueError(f"Unsupported expression: {ast.dump(node)}")
 
 
-def _eval_condition(condition_expr: str, state: Dict) -> str:
-    """Evaluate a condition expression against the current state"""
+def _eval_condition(condition_expr: str, state: Dict) -> bool:
+    """Evaluate a condition expression against the current state
+
+    Args:
+        condition_expr: String containing the condition expression
+        state: Current workflow state dictionary
+
+    Returns:
+        bool: Result of evaluating the condition
+
+    Raises:
+        ValueError: If condition evaluation fails or result cannot be converted to bool
+    """
     operators = {
         ast.And: operator.and_,
         ast.Or: operator.or_,
@@ -1241,7 +1595,15 @@ def _eval_condition(condition_expr: str, state: Dict) -> str:
         # If validation passes, evaluate it
         expr_ast = ast.parse(condition_expr, mode="eval")
         result = _eval_condition_expr(expr_ast.body, state, allowed_funcs, operators)
-        return "true" if result else "false"
+
+        # Convert result to boolean
+        try:
+            return bool(result)
+        except (TypeError, ValueError) as e:
+            raise ValueError(
+                f"Condition result cannot be converted to boolean: {result}"
+            )
+
     except Exception as e:
         # Log the error but also re-raise it
         logger.error(f"Error evaluating condition '{condition_expr}': {str(e)}")
@@ -1296,115 +1658,32 @@ def load_workflow_from_template(
     custom_states: Optional[Dict[str, State]] = None,
     **kwargs,
 ) -> Workflow:
-    """Create a Workflow instance from a YAML template file.
-
-    This function loads a workflow definition from a YAML template, validates its structure,
-    and creates a dynamic Workflow subclass with the specified configuration.
-
-    Args:
-        template_path (str): Path to the YAML template file
-        node_registry (Optional[Dict[str, Node]]): Registry of available node types. 
-            Defaults to prebuilt_nodes.
-        state_registry (Optional[Dict[str, State]]): Registry of available state types.
-            Defaults to prebuilt_states.
-        custom_nodes (Optional[Dict[str, Node]]): Additional custom node types to include.
-            These will be merged with the node_registry.
-        custom_states (Optional[Dict[str, State]]): Additional custom state types to include.
-            These will be merged with the state_registry.
-        **kwargs: Additional arguments passed to the Workflow constructor and used for
-            template variable interpolation.
-
-    Returns:
-        Workflow: A new Workflow subclass instance configured according to the template.
-
-    Raises:
-        ValueError: If the template structure is invalid, required variables are missing,
-            or node/state definitions are incorrect.
-        FileNotFoundError: If the template file cannot be found.
-        yaml.YAMLError: If the template file contains invalid YAML.
-
-    Template Structure:
-        Required fields:
-        - name: Workflow name
-        - state_defs: List of state definitions
-        - nodes: Dictionary of node configurations
-        - entry_point: Name of the starting node
-
-        Optional fields:
-        - llm: LLM model name (default: "gpt-4o")
-        - vlm: VLM model name
-        - exit_commands: List of commands that will exit the workflow
-        - intervene_before: List of nodes that require human input
-        - save_artifacts: Whether to save state artifacts
-        - debug_mode: Enable debug logging
-        - max_history: Maximum number of states to keep in history
-
-    Example:
-        ```yaml
-        # workflow_template.yaml
-        name: example_workflow
-        state_defs:
-          - messages: List[Dict[str, str]]
-          - current_step: str
-        nodes:
-          start:
-            type: prompt
-            template: "Hello! How can I help?"
-            next: process_input
-          process_input:
-            type: custom_node
-            next:
-              condition: "len(messages) > 5"
-              then: END
-              else: start
-        entry_point: start
-        ```
-
-        ```python
-        workflow = load_workflow_from_template(
-            "workflow_template.yaml",
-            custom_nodes={"custom_node": my_node_function}
-        )
-        result = workflow.run()
-        ```
-    """
+    """Create a Workflow instance from a YAML template file."""
     # Combine registries
     if custom_nodes:
         node_registry = {**node_registry, **custom_nodes}
     if custom_states:
         state_registry = {**state_registry, **custom_states}
 
-    # Load and perform basic validation of template structure
+    # Load and validate template
     template = _safe_read_template(template_path, node_registry, state_registry)
-
-    # Interpolate variables in template
     template = _interpolate_variables(template, kwargs)
-
-    # Now perform full validation after interpolation
     _validate_template_structure(template)
     _validate_state_definitions(template["state_defs"], state_registry)
     _validate_nodes(template["nodes"], node_registry)
 
-    # Validate entry point
-    assert (
-        template["entry_point"] in template["nodes"].keys()
-    ), f"Entry point '{template['entry_point']}' not found in nodes"
-
-    # Create dynamic workflow class
     class UserWorkflow(Workflow):
         def __init__(self_, **kwargs):
-            # Store template before super().__init__
+            # Store template
             self_.template = template
 
-            # Process state definitions from template
+            # Process state definitions
             state_defs = process_state_definitions(
                 template["state_defs"], state_registry
             )
 
             # Create kwargs dictionary prioritizing template values
             workflow_kwargs = {}
-
-            # Define mappings of template keys to Workflow parameter names
             param_mappings = {
                 "name": "name",
                 "llm": "llm_name",
@@ -1415,26 +1694,19 @@ def load_workflow_from_template(
                 "max_history": "max_history",
             }
 
-            # First check template values
+            # Process template values first, then kwargs
             for template_key, param_name in param_mappings.items():
                 if template_key in template:
                     workflow_kwargs[param_name] = template[template_key]
-
-            # Then update with provided kwargs, but only for params not set from template
-            for param_name in param_mappings.values():
-                if param_name in kwargs and param_name not in workflow_kwargs:
+                elif param_name in kwargs:
                     workflow_kwargs[param_name] = kwargs[param_name]
 
-            # Set defaults for required parameters if not found in template or kwargs
-            if "llm_name" not in workflow_kwargs:
-                workflow_kwargs["llm_name"] = "gpt-4o"
-            if "vlm_name" not in workflow_kwargs:
-                workflow_kwargs["vlm_name"] = None
-
-            # Add state_defs to kwargs
+            # Set defaults for required parameters
+            workflow_kwargs.setdefault("llm_name", "gpt-4o")
+            workflow_kwargs.setdefault("vlm_name", None)
             workflow_kwargs["state_defs"] = state_defs
 
-            # Add any remaining kwargs that weren't mapped
+            # Add remaining kwargs
             remaining_kwargs = {
                 k: v
                 for k, v in kwargs.items()
@@ -1442,136 +1714,288 @@ def load_workflow_from_template(
             }
             workflow_kwargs.update(remaining_kwargs)
 
-            # Initialize workflow with combined settings
+            # Initialize workflow
             super().__init__(**workflow_kwargs)
 
         def create_workflow(self_):
-            """Create the workflow graph structure from template configuration"""
-            # Initialize the workflow graph with state schema
-            self_.workflow = StateGraph(self_.state_schema)
-
-            # Get template configuration
+            """Create workflow structure from template configuration"""
             nodes_config = template["nodes"]
             interrupt_before = template.get("intervene_before", [])
 
-            # Track input nodes for validation
-            input_nodes = set()
+            # Store original template configuration
+            self_._node_configs = nodes_config.copy()
 
-            # First pass: Create all nodes including input nodes
+            # Initialize workflow configuration
+            self_._workflow_configs = {
+                "nodes": {},
+                "edges": [],
+                "conditionals": [],
+                "entry": None,
+            }
+
+            # First pass: Create all nodes
             for node_name, node_config in nodes_config.items():
-                # If this node needs human input, create an input node first
-                if node_name in interrupt_before:
-                    input_node_name = f"{node_name}_input"
-                    input_nodes.add(input_node_name)
-
-                    def create_input_node():
-                        def input_node(state):
-                            # Placeholder node for human input
-                            return state
-
-                        return input_node
-
-                    # Add input node
-                    self_.workflow.add_node(input_node_name, create_input_node())
-
-                # Create the actual node
                 node_type = node_config["type"]
 
-                # Handle different node types
+                # Create node instance
                 if node_type == "prompt":
                     node = Node(
-                        name=node_name,
                         prompt_template=node_config["template"],
+                        node_type=node_name,
                         sink=node_config.get("sink", []),
-                        sink_format=node_config.get("format"),
+                        sink_format=node_config.get("sink_format"),
                         image_keys=node_config.get("image_keys", []),
                     )
-                    node_func = node.func
                 else:
-                    # Get node function from registry
-                    node_func = node_registry[node_type]
+                    node = node_registry[node_type]
 
-                # Get the appropriate client
-                client = (
-                    self_.vlm_client
-                    if "image_keys" in node_config
-                    else self_.llm_client
+                # Determine client type
+                client_type = (
+                    "vlm"
+                    if (
+                        "image_keys" in node_config
+                        or (node_type == "prompt" and node_config.get("image_keys"))
+                    )
+                    else "llm"
                 )
 
-                # Create node function with config and client
-                def create_node_function(func, config, client):
-                    kwargs = config.get("kwargs", {})
-                    return lambda state: func(state, client, **kwargs)
+                # Extract kwargs
+                kwargs = {
+                    k: v
+                    for k, v in node_config.items()
+                    if k
+                    not in [
+                        "type",
+                        "template",
+                        "next",
+                        "sink",
+                        "sink_format",
+                        "image_keys",
+                    ]
+                }
 
-                # Add node to workflow
-                self_.workflow.add_node(
-                    node_name, create_node_function(node_func, node_config, client)
-                )
+                # Store workflow configuration
+                self_._workflow_configs["nodes"][node_name] = {
+                    "node": node,
+                    "client_type": client_type,
+                    "kwargs": kwargs,
+                }
 
-            # Second pass: Add edges with proper routing through input nodes
+            # Second pass: Create edges and conditionals
             for node_name, node_config in nodes_config.items():
-                next_config = node_config["next"]
-
+                next_config = node_config.get("next")
                 if isinstance(next_config, str):
-                    # Handle simple edges
-                    target = next_config
-                    if target == "END":
-                        target = END
-                    elif target in interrupt_before:
-                        # Route to the input node instead of the target
-                        target = f"{target}_input"
-
-                    # Add edge from input node if it exists
-                    if node_name in interrupt_before:
-                        input_node = f"{node_name}_input"
-                        self_.workflow.add_edge(input_node, node_name)
-
-                    # Add edge from actual node to target
-                    self_.workflow.add_edge(node_name, target)
-
-                elif isinstance(next_config, dict):
-                    # Handle conditional edges
-                    condition_expr = next_config["condition"]
-                    then_target = next_config["then"]
-                    else_target = next_config["else"]
-
-                    # Convert "END" to END constant and route through input nodes
-                    if then_target == "END":
-                        then_target = END
-                    elif then_target in interrupt_before:
-                        then_target = f"{then_target}_input"
-
-                    if else_target == "END":
-                        else_target = END
-                    elif else_target in interrupt_before:
-                        else_target = f"{else_target}_input"
-
-                    # Add edge from input node if it exists
-                    if node_name in interrupt_before:
-                        input_node = f"{node_name}_input"
-                        self_.workflow.add_edge(input_node, node_name)
-
-                    def make_condition(expr):
-                        return lambda state: _eval_condition(expr, state)
-
-                    self_.workflow.add_conditional_edges(
-                        node_name,
-                        make_condition(condition_expr),
+                    # Simple edge
+                    self_._workflow_configs["edges"].append(
                         {
-                            "true": then_target,
-                            "false": else_target,
-                        },
+                            "from": node_name,
+                            "to": END if next_config == "END" else next_config,
+                        }
+                    )
+                elif isinstance(next_config, dict):
+                    # Conditional edge
+                    self_._workflow_configs["conditionals"].append(
+                        {
+                            "from": node_name,
+                            "condition": next_config["condition"],
+                            "then": next_config["then"],
+                            "otherwise": next_config["otherwise"],
+                        }
                     )
 
-            # Set entry point, routing through input node if necessary
-            entry_point = self_.template["entry_point"]
-            if entry_point in interrupt_before:
-                entry_point = f"{entry_point}_input"
-            self_.workflow.set_entry_point(entry_point)
+            # Set entry point
+            self_._workflow_configs["entry"] = template["entry_point"]
+            self_._entry_point = template["entry_point"]
 
-            # Compile workflow with interrupt configuration
-            self_.graph = self_.workflow.compile(
-                checkpointer=MemorySaver(), interrupt_before=list(input_nodes)
+            # Compile workflow
+            self_.compile(
+                interrupt_before=interrupt_before,
+                auto_input_nodes=True,
+                checkpointer="memory",
             )
+
     return UserWorkflow(**kwargs)
 
+
+def export_workflow_to_template(
+    workflow: Workflow, output_path: Optional[str] = None
+) -> Dict:
+    """Export a workflow configuration to a YAML template."""
+    assert isinstance(workflow, Workflow), "Workflow instance required"
+    assert hasattr(workflow, "_node_configs"), "Workflow must have node configurations"
+
+    # Start with required fields
+    template = {
+        "name": workflow.name or "unnamed_workflow",
+    }
+
+    # Export state definitions
+    state_hints = get_type_hints(workflow.state_schema)
+    if not state_hints:
+        template["state_defs"] = [{"state": "Dict[str, Any]"}]
+    else:
+        template["state_defs"] = [
+            {name: _type_from_str(type_hint)} for name, type_hint in state_hints.items()
+        ]
+
+    # Export nodes configuration using original node_configs
+    template["nodes"] = workflow._node_configs
+
+    # Add entry point
+    template["entry_point"] = workflow._entry_point
+
+    # Add optional fields
+    if workflow.llm_client and workflow.llm_client.model_name:
+        template["llm"] = workflow.llm_client.model_name
+
+    if workflow.vlm_client and workflow.vlm_client.model_name:
+        template["vlm"] = workflow.vlm_client.model_name
+
+    if workflow.exit_commands:
+        template["exit_commands"] = workflow.exit_commands
+
+    if workflow._interrupt_before:
+        template["intervene_before"] = [
+            node[:-6] if node.endswith("_input") else node
+            for node in workflow._interrupt_before
+        ]
+
+    if workflow.checkpointer:
+        template["checkpointer"] = workflow.checkpointer
+
+    # Validate template
+    node_registry = {}
+    for node_name, node_config in workflow._node_configs.items():
+        if "type" in node_config:
+            if (
+                not node_config["type"] in node_registry
+                and node_config["type"] != "prompt"
+            ):
+                node_registry[node_config["type"]] = node_config["type"]
+    try:
+        _validate_template_structure(template)
+        _validate_nodes(template["nodes"], node_registry)
+        _validate_state_definitions(template["state_defs"], {})
+    except ValueError as e:
+        raise ValueError(f"Generated template failed validation: {str(e)}")
+
+    # Save to file if path provided
+    if output_path:
+        output_template = template.copy()
+        output_template["nodes"] = {}
+        for node_name, node_config in workflow._node_configs.items():
+            # Create node configuration
+            node_template = OrderedDict()
+
+            # 1. Type (always first)
+            node_template["type"] = node_config.get("type", "prompt")
+
+            # 2. Template (if present)
+            if "template" in node_config:
+                template_text = node_config["template"]
+                # Clean up template text
+                template_text = template_text.replace("\\n", "\n")
+                template_text = template_text.replace("\t", "\n")
+                template_text = template_text.replace("\\t", "\t")
+                template_text = " ".join(template_text.split())
+                template_text = template_text.strip()
+                node_template["template"] = template_text
+
+            # 3. Image keys (if present)
+            if "image_keys" in node_config:
+                image_keys = node_config["image_keys"]
+                # Use direct value for single item
+                node_template["image_keys"] = (
+                    image_keys[0] if len(image_keys) == 1 else image_keys
+                )
+
+            # 4. Sink (if present)
+            if "sink" in node_config:
+                sink = node_config["sink"]
+                # Use direct value for single item
+                node_template["sink"] = (
+                    sink[0] if isinstance(sink, list) and len(sink) == 1 else sink
+                )
+
+            # 5. Additional kwargs (if any)
+            if "kwargs" in node_config:
+                for k, v in node_config["kwargs"].items():
+                    if k not in ["type", "template", "next"] and v is not None:
+                        if callable(v):
+                            node_template[k] = f"${{{k}}}"
+                        else:
+                            node_template[k] = v
+
+            # 6. Next (always last)
+            next_config = node_config.get("next", "END")
+            if isinstance(next_config, dict):
+                node_template["next"] = {
+                    "condition": next_config.get("condition", "True"),
+                    "then": (
+                        "END"
+                        if next_config.get("then") == END
+                        else next_config.get("then", "END")
+                    ),
+                    "otherwise": (
+                        "END"
+                        if next_config.get("otherwise") == END
+                        else next_config.get("otherwise", "END")
+                    ),
+                }
+            else:
+                node_template["next"] = (
+                    "END" if next_config == END else (next_config or "END")
+                )
+
+            # Ensure the keys are in the desired order
+            ordered_node_template = OrderedDict()
+            for key in ["type", "template", "sink", "image_keys", "next"]:
+                if key in node_template:
+                    ordered_node_template[key] = node_template[key]
+            # Add any remaining keys
+            for key in node_template:
+                if key not in ordered_node_template:
+                    ordered_node_template[key] = node_template[key]
+
+            output_template["nodes"][node_name] = ordered_node_template
+
+        with open(output_path, "w") as f:
+
+            class CustomDumper(yaml.SafeDumper):
+                pass
+
+            def str_presenter(dumper, data):
+                return dumper.represent_scalar("tag:yaml.org,2002:str", data)
+
+            def list_presenter(dumper, data):
+                if len(data) <= 3:
+                    return dumper.represent_sequence(
+                        "tag:yaml.org,2002:seq", data, flow_style=True
+                    )
+                return dumper.represent_sequence(
+                    "tag:yaml.org,2002:seq", data, flow_style=False
+                )
+
+            def ordered_dict_presenter(dumper, data):
+                return dumper.represent_mapping("tag:yaml.org,2002:map", data)
+
+            def dict_presenter(dumper, data):
+                return dumper.represent_mapping("tag:yaml.org,2002:map", data)
+
+            CustomDumper.add_representer(str, str_presenter)
+            CustomDumper.add_representer(list, list_presenter)
+            CustomDumper.add_representer(OrderedDict, ordered_dict_presenter)
+            CustomDumper.add_representer(dict, dict_presenter)
+
+            yaml.dump(
+                output_template,
+                f,
+                Dumper=CustomDumper,
+                sort_keys=False,
+                default_flow_style=False,
+                width=80,
+                indent=2,
+                allow_unicode=True,
+            )
+
+    return template

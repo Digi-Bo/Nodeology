@@ -58,7 +58,7 @@ class PlanningState(State):
 
 # Define the planner template
 planner = Node(
-    name="planner",
+    node_type="planner",
     prompt_template="""# HISTORY:
 {history_text}
 

@@ -61,7 +61,7 @@ class DiagnosisState(State):
 
 
 commentator = Node(
-    name="commentator",
+    node_type="commentator",
     prompt_template="""# EXAMPLE DIAGNOSIS:
 {example_diagnosis_string}
 

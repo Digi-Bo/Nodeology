@@ -58,7 +58,7 @@ class HilpState(State):
 
 
 conversation_summarizer = Node(
-    name="summarizer",
+    node_type="summarizer",
     prompt_template="""# Instructions:
 Summarize the previous conversation and output a summary of key points in bullet points.
 Each bullet point should be a complete sentence and contain only one key point.
@@ -86,7 +86,7 @@ conversation_summarizer.post_process = conversation_summarizer_post_process
 
 
 survey = Node(
-    name="survey",
+    node_type="survey",
     prompt_template="""# QUESTIONS:
 {questions}
 
@@ -96,6 +96,7 @@ Ask ONLY ONE question at a time following the pre-defined order.
 YOU NEED TO ASK ALL QUESTIONS! DO NOT SKIP QUESTIONS! DO NOT CHANGE ORDER OF QUESTIONS! DO NOT REWRITE QUESTIONS!
 If all questions have been asked, output exactly "COLLECT_COMPLETE".""",
     sink=None,
+    use_conversation=True,
 )
 
 

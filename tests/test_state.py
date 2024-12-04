@@ -46,11 +46,16 @@ POSSIBILITY OF SUCH DAMAGE.
 ### Initial Author <2024>: Xiangyu Yin
 
 import os, sys
+import numpy as np
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from typing import List, Dict, Union
 import pytest
-from nodeology.state import process_state_definitions, _resolve_state_type
+from nodeology.state import (
+    process_state_definitions,
+    _resolve_state_type,
+    _type_from_str,
+)
 
 
 class TestTypeResolution:
@@ -62,6 +67,7 @@ class TestTypeResolution:
         assert _resolve_state_type("int") == int
         assert _resolve_state_type("float") == float
         assert _resolve_state_type("bool") == bool
+        assert _resolve_state_type("ndarray") == np.ndarray
 
     def test_list_types(self):
         """Test resolution of List types"""
@@ -83,6 +89,47 @@ class TestTypeResolution:
         complex_type = "Dict[str, List[Dict[str, Union[int, str]]]]"
         expected = Dict[str, List[Dict[str, Union[int, str]]]]
         assert _resolve_state_type(complex_type) == expected
+
+    def test_numpy_composite_types(self):
+        """Test resolution of composite types involving numpy arrays"""
+        assert _resolve_state_type("List[ndarray]") == List[np.ndarray]
+        assert _resolve_state_type("Dict[str, ndarray]") == Dict[str, np.ndarray]
+        assert (
+            _resolve_state_type("Dict[str, List[ndarray]]")
+            == Dict[str, List[np.ndarray]]
+        )
+        assert _resolve_state_type("Union[ndarray, int]") == Union[np.ndarray, int]
+
+    def test_type_conversion_symmetry(self):
+        """Test that type conversion is symmetrical"""
+        test_cases = [
+            str,
+            int,
+            float,
+            bool,
+            List[str],
+            List[int],
+            Dict[str, int],
+            Dict[str, List[str]],
+            Union[str, int],
+            Union[str, List[int]],
+            np.ndarray,
+            List[np.ndarray],
+            Dict[str, np.ndarray],
+            Dict[str, List[np.ndarray]],
+            Union[np.ndarray, int],
+            Union[List[np.ndarray], Dict[str, np.ndarray]],
+        ]
+
+        for type_obj in test_cases:
+            # Convert type to string
+            type_str = _type_from_str(type_obj)
+            # Convert string back to type
+            resolved_type = _resolve_state_type(type_str)
+            # Verify they're equivalent
+            assert str(resolved_type) == str(
+                type_obj
+            ), f"Type conversion failed for {type_obj}"
 
 
 class TestErrorHandling:
@@ -172,4 +219,46 @@ class TestStateDefinitionProcessing:
             ("field1", str),
             ("field2", List[int]),
             ("field3", Dict[str, bool]),
+        ]
+
+    def test_numpy_array_state_definition(self):
+        """Test processing of numpy array state definitions"""
+        # Test direct ndarray type
+        state_def = {"name": "array_field", "type": "ndarray"}
+        result = process_state_definitions([state_def], {})
+        assert result == [("array_field", np.ndarray)]
+
+        # Test in list format
+        state_def = ["array_field2", "ndarray"]
+        result = process_state_definitions([state_def], {})
+        assert result == [("array_field2", np.ndarray)]
+
+        # Test in mixed definitions
+        state_defs = [
+            {"name": "field1", "type": "str"},
+            ["array_field", "ndarray"],
+            {"name": "field3", "type": "Dict[str, bool]"},
+        ]
+        result = process_state_definitions(state_defs, {})
+        assert result == [
+            ("field1", str),
+            ("array_field", np.ndarray),
+            ("field3", Dict[str, bool]),
+        ]
+
+    def test_numpy_composite_state_definition(self):
+        """Test processing of composite state definitions with numpy arrays"""
+        state_defs = [
+            {"name": "array_list", "type": "List[ndarray]"},
+            {"name": "array_dict", "type": "Dict[str, ndarray]"},
+            ["nested_arrays", "Dict[str, List[ndarray]]"],
+            {"name": "mixed_type", "type": "Union[ndarray, int]"},
+        ]
+
+        result = process_state_definitions(state_defs, {})
+        assert result == [
+            ("array_list", List[np.ndarray]),
+            ("array_dict", Dict[str, np.ndarray]),
+            ("nested_arrays", Dict[str, List[np.ndarray]]),
+            ("mixed_type", Union[np.ndarray, int]),
         ]
