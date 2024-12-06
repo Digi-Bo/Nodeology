@@ -1063,16 +1063,13 @@ class TestTemplateLoading(TestWorkflowBase):
         # Verify path A execution
         assert result_a["current_node_type"] == "final"
         assert result_a["previous_node_type"] == "path_a"
-        assert len(result_a["messages"]) == 8
+        assert len(result_a["messages"]) == 5
         assert result_a["messages"][0]["role"] == "user"
         assert result_a["messages"][0]["content"] == "path_a:test"
-        assert result_a["messages"][1]["content"] == "start started."
-        assert result_a["messages"][2]["content"] == "Initial prompt: path_a:test"
-        assert result_a["messages"][3]["content"] == "path_a started."
-        assert result_a["messages"][4]["content"] == "Processing path A: path_a:test"
-        assert result_a["messages"][5]["content"] == "final input"
-        assert result_a["messages"][6]["content"] == "final started."
-        assert result_a["messages"][7]["content"] == "Final output: final input"
+        assert result_a["messages"][1]["content"] == "Initial prompt: path_a:test"
+        assert result_a["messages"][2]["content"] == "Processing path A: path_a:test"
+        assert result_a["messages"][3]["content"] == "final input"
+        assert result_a["messages"][4]["content"] == "Final output: final input"
 
         # Update workflow for path B
         workflow.update_state({"human_input": "", "output": ""})
@@ -1085,18 +1082,13 @@ class TestTemplateLoading(TestWorkflowBase):
         # Verify path B execution
         assert result_b["current_node_type"] == "final"
         assert result_b["previous_node_type"] == "path_b"
-        assert (
-            len(result_b["messages"]) == 16
-        )  # Previous 5 msgs + new input + 2 assistant msgs + final input + final assistant msg
-        assert result_b["messages"][8]["role"] == "user"
-        assert result_b["messages"][8]["content"] == "path_b:test"
-        assert result_b["messages"][9]["content"] == "start started."
-        assert result_b["messages"][10]["content"] == "Initial prompt: path_b:test"
-        assert result_b["messages"][11]["content"] == "path_b started."
-        assert result_b["messages"][12]["content"] == "Processing path B: path_b:test"
-        assert result_b["messages"][13]["content"] == "final input"
-        assert result_b["messages"][14]["content"] == "final started."
-        assert result_b["messages"][15]["content"] == "Final output: final input"
+        assert len(result_b["messages"]) == 10
+        assert result_b["messages"][5]["role"] == "user"
+        assert result_b["messages"][5]["content"] == "path_b:test"
+        assert result_b["messages"][6]["content"] == "Initial prompt: path_b:test"
+        assert result_b["messages"][7]["content"] == "Processing path B: path_b:test"
+        assert result_b["messages"][8]["content"] == "final input"
+        assert result_b["messages"][9]["content"] == "Final output: final input"
 
         # Verify state history length for both paths
         assert (

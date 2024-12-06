@@ -500,10 +500,6 @@ class Node:
             if pre_process_result is None:
                 return state
             state = pre_process_result
-        else:
-            record_messages(
-                state, [("assistant", self.node_type + " started.", "green")]
-            )
 
         # Get values from state or kwargs
         if isinstance(source, str):
@@ -564,7 +560,7 @@ class Node:
                 message = message.replace(placeholder, original)
 
             # Record the formatted message
-            record_messages(state, [("nodeology", message, "white")], False)
+            record_messages(state, [("user", message, "white")], False)
 
             # Determine if we should use conversation mode
             should_use_conversation = (
@@ -573,24 +569,15 @@ class Node:
                 else self.use_conversation
             )
             if should_use_conversation:
-                assert (
-                    "conversation" in state
-                    and isinstance(state["conversation"], list)
-                    and len(state["conversation"]) > 0
-                    and isinstance(state["conversation"][-1], dict)
-                    and "role" in state["conversation"][-1]
-                    and "content" in state["conversation"][-1]
-                ), "Conversation must be a list of dictionaries with 'role' and 'content' keys"
+                assert "conversation" in state and isinstance(
+                    state["conversation"], list
+                ), "Conversation does not exist in state or is not a list of messages"
 
             # Prepare messages for client call
             if should_use_conversation:
-                # Filter and format conversation messages
-                messages = [
-                    {"role": msg["role"], "content": msg["content"]}
-                    for msg in state["conversation"]
-                    if msg.get("role") in ["user", "assistant"]
-                ]
-                messages.append({"role": "user", "content": message})
+                if len(state["conversation"]) == 0 or state["end_conversation"]:
+                    state["conversation"].append({"role": "user", "content": message})
+                messages = state["conversation"]
             else:
                 messages = [{"role": "user", "content": message}]
 

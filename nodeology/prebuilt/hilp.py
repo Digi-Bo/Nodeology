@@ -55,16 +55,20 @@ class HilpState(State):
     end_conversation: bool
     conversation: List[dict]
     conversation_summary: str
+    questions: str
+    collector_response: str
 
 
 conversation_summarizer = Node(
     node_type="summarizer",
     prompt_template="""# Instructions:
-Summarize the previous conversation and output a summary of key points in bullet points.
+Summarize the previous conversation and output a summary of ONLY user responses in bullet points.
 Each bullet point should be a complete sentence and contain only one key point.
 Do not add new information. Do not make up information. Do not change the order of information.
 For numbers, use the exact values from the conversation. Do not make up numbers.
 Output MUST be bullet points ONLY, do not add explanation before or after.""",
+    sink="conversation_summary",
+    use_conversation=True,
 )
 
 
@@ -95,42 +99,29 @@ Ask ALL questions from pre-defined QUESTIONS one by one.
 Ask ONLY ONE question at a time following the pre-defined order.
 YOU NEED TO ASK ALL QUESTIONS! DO NOT SKIP QUESTIONS! DO NOT CHANGE ORDER OF QUESTIONS! DO NOT REWRITE QUESTIONS!
 If all questions have been asked, output exactly "COLLECT_COMPLETE".""",
-    sink=None,
+    sink="collector_response",
     use_conversation=True,
 )
 
 
 def survey_pre_process(state, client, **kwargs):
-    if "source_questions" not in kwargs:
-        raise ValueError("source_questions parameter is required")
-
-    source_questions = kwargs["source_questions"]
-    if source_questions not in state:
-        raise ValueError(f"Question source '{source_questions}' not found in state")
+    if "questions" not in state and "questions" not in kwargs:
+        raise ValueError(f"Questions state not found")
 
     if len(state.get("conversation", [])) == 0:
         state["conversation"] = []
-        record_messages(
-            state,
-            [
-                ("assistant", "I'd like to ask some questions", "green"),
-                (
-                    "assistant",
-                    'You can say "terminate pear" to terminate the workflow at any time.',
-                    "yellow",
-                ),
-            ],
-        )
         state["begin_conversation"] = True
         state["end_conversation"] = False
         return state
-    return None
+
+    state["conversation"].append({"role": "user", "content": state["human_input"]})
+    return state
 
 
 def survey_post_process(state, client, **kwargs):
-    collector_output = state["collector_output"]
+    collector_response = state["collector_response"]
 
-    if "COLLECT_COMPLETE" in collector_output:
+    if "COLLECT_COMPLETE" in collector_response:
         record_messages(state, [("assistant", "Thank you for your answers!", "green")])
         state["conversation"].append(
             {"role": "assistant", "content": "Thank you for your answers!"}
@@ -139,8 +130,8 @@ def survey_post_process(state, client, **kwargs):
         state["end_conversation"] = True
         return conversation_summarizer(state, client, **kwargs)
 
-    record_messages(state, [("assistant", collector_output, "green")])
-    state["conversation"].append({"role": "assistant", "content": collector_output})
+    record_messages(state, [("assistant", collector_response, "green")])
+    state["conversation"].append({"role": "assistant", "content": collector_response})
     return state
 
 
