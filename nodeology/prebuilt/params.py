@@ -99,7 +99,6 @@ def formatter_post_process(state, client, **kwargs):
             ("assistant", state["params"], "blue"),
         ],
     )
-    state["params"]["data_directory"] = state["data_path"]
     return state
 
 
