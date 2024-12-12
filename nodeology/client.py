@@ -71,7 +71,7 @@ OAI_RECOMMENDED_VLMS = [
 OLLAMA_RECOMMENDED_LLMS = [
     "llama3.1:70b",
     "llama3.1:405b",
-    "qwen2.5:14b",
+    "llama3.3" "llama3.3:70b" "qwen2.5:14b",
     "qwen2.5:32b",
     "qwen2.5:72b",
     "qwen2.5-coder:32b",
@@ -97,6 +97,8 @@ OLLAMA_RECOMMENDED_VLMS = [
 ]
 
 TGT_RECOMMENDED_LLMS = [
+    "tgt:llama3.3",
+    "tgt:llama3.3:70b",
     "tgt:llama3.1:70b",
     "tgt:llama3.1:405b",
     "tgt:qwen2.5:72b",
@@ -106,6 +108,8 @@ TGT_RECOMMENDED_VLMS = [
     "tgt:llama3.2:90b",
 ]
 TGT_MODEL_NAME_MAP = {
+    "tgt:llama3.3": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+    "tgt:llama3.3:70b": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
     "tgt:llama3.1:70b": "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
     "tgt:llama3.1:405b": "meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo",
     "tgt:qwen2.5:72b": "Qwen/Qwen2.5-72B-Instruct-Turbo",

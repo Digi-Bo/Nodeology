@@ -45,7 +45,7 @@ POSSIBILITY OF SUCH DAMAGE.
 
 ### Initial Author <2024>: Xiangyu Yin
 
-import os, sys
+import os
 import tempfile
 import shutil
 from pathlib import Path
@@ -60,8 +60,6 @@ except ImportError:
 
 import pytest
 from unittest.mock import patch
-
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from langgraph.graph import END
 from langgraph.graph.state import CompiledStateGraph

@@ -45,10 +45,7 @@ POSSIBILITY OF SUCH DAMAGE.
 
 ### Initial Author <2024>: Xiangyu Yin
 
-import os, sys
 import numpy as np
-
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from typing import List, Dict, Union
 import pytest
 from nodeology.state import (

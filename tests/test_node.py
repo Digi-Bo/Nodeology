@@ -45,10 +45,7 @@ POSSIBILITY OF SUCH DAMAGE.
 
 ### Initial Author <2024>: Xiangyu Yin
 
-import os, sys
-
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import logging
+import os, logging
 import pytest
 from typing import Any, Dict, List
 import numpy as np

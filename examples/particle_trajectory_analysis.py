@@ -1,7 +1,3 @@
-import os, sys
-
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 import json
 import numpy as np
 from typing import List, Dict, Tuple
@@ -457,11 +453,11 @@ if __name__ == "__main__":
         debug_mode=False,
     )
 
-    # result = workflow.run(initial_state)
+    result = workflow.run(initial_state)
 
-    workflow.to_yaml("particle_trajectory_analysis.yaml")
+    # workflow.to_yaml("particle_trajectory_analysis.yaml")
 
-    print(workflow.graph.get_graph().draw_ascii())
-    workflow.graph.get_graph().draw_mermaid_png(
-        output_file_path="particle_trajectory_analysis.png"
-    )
+    # print(workflow.graph.get_graph().draw_ascii())
+    # workflow.graph.get_graph().draw_mermaid_png(
+    #     output_file_path="particle_trajectory_analysis.png"
+    # )

@@ -1,6 +1,5 @@
 > [!IMPORTANT]
-This package is actively in development, and breaking changes may occur.
-> 
+> This package is actively in development, and breaking changes may occur.
 
 <div align="center">
   <img src="assets/logo.png" alt="Nodeology Logo" width="300"/>
@@ -52,14 +51,11 @@ Through its composable node architecture, graph-based workflow orchestration, an
 
 ## 🚀 Getting Started
 
-### (Development) Installation
+### Installation
 
 ```bash
-git clone https://github.com/xyin-anl/nodeology.git
-cd nodeology
-pip install -r requirements.txt
+pip install nodeology
 ```
-`pip` installation will be available once the API get into steady state.
 
 ### Environment Setup
 
@@ -71,6 +67,9 @@ export OPENAI_API_KEY='your-api-key'
 
 # For Anthropic models (optional)
 export ANTHROPIC_API_KEY='your-api-key'
+
+# For Together AI models
+export TOGETHER_API_KEY='your-api-key'
 
 # For local models via Ollama (optional)
 # First install Ollama, then models will be downloaded automatically
@@ -124,18 +123,18 @@ Focus on clarity, grammar, and style improvements.""",
 # 3. Create workflow
 class TextEnhancementWorkflow(Workflow):
     state_schema = TextAnalysisState
-    
+
     def create_workflow(self):
         # Add nodes
         self.add_node("analyze", analyze_text)
         self.add_node("improve", improve_text)
-        
+
         # Connect nodes
         self.add_flow("analyze", "improve")
-        
+
         # Set entry point
         self.set_entry("analyze")
-        
+
         # Compile workflow
         self.compile()
 
@@ -157,8 +156,9 @@ print("\nImproved text:", result["improved_text"])
 ```
 
 This example demonstrates:
+
 - Creating a custom state with type hints
-- Building nodes with prompt templates 
+- Building nodes with prompt templates
 - Defining a simple workflow with two connected nodes
 - Running the workflow and accessing results
 
@@ -169,8 +169,6 @@ After getting familiar with the basics:
 1. Check out the [Particle Trajectory Analysis](examples/particle_trajectory_analysis.py) example for a more complex workflow
 2. Learn about `nodeology` concepts and build the trajectory analysis example along the way
 3. Review pre-built components in `nodeology.prebuilt` for common research tasks
-
-
 
 ## 💡 Concepts
 
@@ -217,12 +215,12 @@ class ParticleState(State):
     """State for particle trajectory analysis workflow"""
     # Physics parameters
     initial_position: np.ndarray    # Initial position vector [x,y,z]
-    initial_velocity: np.ndarray    # Initial velocity vector [vx,vy,vz] 
+    initial_velocity: np.ndarray    # Initial velocity vector [vx,vy,vz]
     mass: float                     # Particle mass in kg
     charge: float                   # Particle charge in Coulombs
     E_field: np.ndarray             # Electric field vector [Ex,Ey,Ez] in N/C
     B_field: np.ndarray             # Magnetic field vector [Bx,By,Bz] in Tesla
-    
+
     # Analysis results
     validation_response: str        # Parameter validation results
     positions: List[np.ndarray]     # List of position vectors over time
@@ -251,6 +249,7 @@ from nodeology.prebuilt import (
 ```
 
 **Notes on state usage**:
+
 - States should contain all data needed by workflow nodes
 - Update state values through dictionary operations
 - Use type validtion to catch errors early
@@ -269,7 +268,7 @@ In `nodeology` we hope to combine foundational AI logics (usually defined by a p
 
 #### Prompt-based `Node` for using foundation AI
 
-In the prompt that specifies the processing logic, we can use the `{var}` syntax to specify what state variables we need to access (i.e., source state variables). During workflow execution, every time those nodes are invoked those `{var}` placeholders will be replaced by the latest state variable values. Essentially you define a prompt template with this syntax. Along with a prompt template, you also need to specify where the `Node` should put the foundation model's response using the `sink` argument. 
+In the prompt that specifies the processing logic, we can use the `{var}` syntax to specify what state variables we need to access (i.e., source state variables). During workflow execution, every time those nodes are invoked those `{var}` placeholders will be replaced by the latest state variable values. Essentially you define a prompt template with this syntax. Along with a prompt template, you also need to specify where the `Node` should put the foundation model's response using the `sink` argument.
 
 In our particle trajectory workflow, we use prompt-based nodes for parameter validation, trajectory analysis, and parameter updates. Here's the validation node:
 
@@ -325,7 +324,7 @@ from scipy.integrate import solve_ivp
 
 @as_node(sink=["positions", "velocities", "accelerations", "energies", "calculation_warnings"])
 def calculate_trajectory(
-    mass: float, 
+    mass: float,
     charge: float,
     initial_position: np.ndarray,
     initial_velocity: np.ndarray,
@@ -334,46 +333,47 @@ def calculate_trajectory(
 ) -> tuple:
     """Calculate particle trajectory using equations of motion"""
     warnings = []
-    
+
     def force(t, state):
         # Extract position and velocity
         pos = state[:3]
         vel = state[3:]
-        
+
         # Lorentz force calculation
         F = charge * (E_field + np.cross(vel, B_field))
-        
+
         # Return derivatives [velocity, acceleration]
         return np.concatenate([vel, F/mass])
-    
+
     # Initial state vector
     y0 = np.concatenate([initial_position, initial_velocity])
-    
+
     # Solve equations of motion
     t_span = [0, 1.0]  # 1 second trajectory
     t_eval = np.linspace(*t_span, 1000)
-    
+
     try:
         sol = solve_ivp(force, t_span, y0, t_eval=t_eval, method='RK45')
-        
+
         # Extract results
         positions = [sol.y[:3,i] for i in range(sol.y.shape[1])]
         velocities = [sol.y[3:,i] for i in range(sol.y.shape[1])]
         accelerations = [force(t, sol.y[:,i])[3:] for i,t in enumerate(sol.t)]
-        
+
         # Calculate energy at each point
         energies = [0.5 * mass * np.dot(v,v) + charge * np.dot(E_field, p)
                    for p,v in zip(positions, velocities)]
-                   
+
         if not sol.success:
             warnings.append(f"Integration warning: {sol.message}")
-            
+
     except Exception as e:
         warnings.append(f"Calculation error: {str(e)}")
         return [], [], [], [], [str(e)]
-        
+
     return positions, velocities, accelerations, energies, warnings
 ```
+
 In the example, we also used a function-based node for plotting and designed a mini terminal program to carry out pre-defined user interactions. Again, we aim to use foundation AI only when it is necessary.
 
 #### Pre-built research `Node`s
@@ -407,13 +407,13 @@ from nodeology.prebuilt import (
 ```
 
 **Notes on node usage**: User defined nodes are to be combined and composed into a workflow. But those nodes by themselves are also mini programs that can run on their own. To run a single node, you just need to provide:
+
 1. `state`: `State` object containing required state variables
 2. `client`: LLM or VLM client for AI operations
 3. `sink`: Optional for overriding where to store results
 4. `source`: Optional for overriding prompt state names
 5. `user_conversation`: model visibility
 6. optional `kwargs` needed for complex processing logic
-
 
 ### ⛓️ Workflows
 
@@ -444,7 +444,7 @@ class ParticleTrajectoryWorkflow(Workflow):
         self.add_node("plot_trajectory", plot_trajectory)
         self.add_node("analyze_trajectory", analyze_trajectory)
         self.add_node("update_parameters", update_params)
-        
+
         # Add edges with conditional logic
         self.add_conditional_flow(
             "validate_parameters",
@@ -453,7 +453,7 @@ class ParticleTrajectoryWorkflow(Workflow):
             "adjust_parameters"
         )
         self.add_flow("calculate_trajectory", "plot_trajectory")
-        self.add_flow("plot_trajectory", "analyze_trajectory") 
+        self.add_flow("plot_trajectory", "analyze_trajectory")
         self.add_flow("analyze_trajectory", "update_parameters")
         self.add_conditional_flow(
             "update_parameters",
@@ -461,15 +461,16 @@ class ParticleTrajectoryWorkflow(Workflow):
             "validate_parameters",
             END
         )
-        
+
         # Set entry point
         self.set_entry("validate_parameters")
-        
+
         # Compile with intervention points
         self.compile(interrupt_before=["update_parameters"])
 ```
 
 After defining the workflow, you can instantiate with custom configurations
+
 ```python
     workflow = TrajectoryWorkflow(
         state_defs=TrajectoryState,
@@ -481,11 +482,15 @@ After defining the workflow, you can instantiate with custom configurations
         checkpointer='memory'
     )
 ```
+
 You can first try to visualize the workflow to see if there are any structrual problems (need `pygraphviz` installed)
+
 ```python
     workflow.graph.get_graph().draw_mermaid_png(output_file_path="particle_trajectory_analysis.png")
 ```
+
 Then you can run the workflow with initial solutions
+
 ```python
 initial_state = {
     "mass": 9.1093837015e-31,  # electron mass
@@ -508,38 +513,42 @@ One of the design philosophies is that workflows should be sharable and reusable
 4. Load workflows from yaml templates
 
 To generate a yaml workflow template
+
 ```python
 workflow.to_yaml("particle_trajectory_analysis.yaml")
 ```
+
 Then you will get something like:
+
 ```yaml
 name: TrajectoryWorkflow_12_04_2024_00_45_04
 state_defs:
-- current_node_type: str
-- previous_node_type: str
-- human_input: str
-- input: str
-- output: str
-- messages: List[dict]
-- initial_position: ndarray
-- initial_velocity: ndarray
-- mass: float
-- charge: float
-- E_field: ndarray
-- B_field: ndarray
-- validation_response: str
-- positions: List[ndarray]
-- velocities: List[ndarray]
-- accelerations: List[ndarray]
-- energies: List[float]
-- calculation_warnings: List[str]
-- trajectory_plot: str
-- analysis_result: dict
-- updated_parameters: dict
+  - current_node_type: str
+  - previous_node_type: str
+  - human_input: str
+  - input: str
+  - output: str
+  - messages: List[dict]
+  - initial_position: ndarray
+  - initial_velocity: ndarray
+  - mass: float
+  - charge: float
+  - E_field: ndarray
+  - B_field: ndarray
+  - validation_response: str
+  - positions: List[ndarray]
+  - velocities: List[ndarray]
+  - accelerations: List[ndarray]
+  - energies: List[float]
+  - calculation_warnings: List[str]
+  - trajectory_plot: str
+  - analysis_result: dict
+  - updated_parameters: dict
 nodes:
   validate_parameters:
     type: prompt
-    template: '# Current Parameters: Mass (mass): {mass} kg Charge (charge): {charge}
+    template:
+      '# Current Parameters: Mass (mass): {mass} kg Charge (charge): {charge}
       C Initial Position (initial_position): {initial_position} m Initial Velocity
       (initial_velocity): {initial_velocity} m/s E-field (E_field): {E_field} N/C
       B-field (B_field): {B_field} T # Physics Constraints: 1. Mass must be positive
@@ -562,21 +571,21 @@ nodes:
   adjust_parameters:
     type: adjust_parameters
     sink:
-    - mass
-    - charge
-    - initial_position
-    - initial_velocity
-    - E_field
-    - B_field
+      - mass
+      - charge
+      - initial_position
+      - initial_velocity
+      - E_field
+      - B_field
     next: validate_parameters
   calculate_trajectory:
     type: calculate_trajectory
     sink:
-    - positions
-    - velocities
-    - accelerations
-    - energies
-    - calculation_warnings
+      - positions
+      - velocities
+      - accelerations
+      - energies
+      - calculation_warnings
     next: plot_trajectory
   plot_trajectory:
     type: plot_trajectory
@@ -584,7 +593,8 @@ nodes:
     next: analyze_trajectory
   analyze_trajectory:
     type: prompt
-    template: 'Analyze this particle trajectory plot. Please determine: 1. The type
+    template:
+      'Analyze this particle trajectory plot. Please determine: 1. The type
       of motion (linear, circular, helical, or chaotic) 2. Key physical features (radius,
       period, pitch angle if applicable) 3. Explanation of the motion 4. Anomalies
       in the motion Output in JSON format: {{ "trajectory_type": "type_name", "key_features":
@@ -595,7 +605,8 @@ nodes:
     next: update_parameters
   update_parameters:
     type: prompt
-    template: 'Current parameters: Mass: {mass} kg Charge: {charge} C Initial Position:
+    template:
+      'Current parameters: Mass: {mass} kg Charge: {charge} C Initial Position:
       {initial_position} m Initial Velocity: {initial_velocity} m/s E-field: {E_field}
       N/C B-field: {B_field} T Question: Do you want to update the parameters and
       try again? If so, let me know what you''d like to change. Answer: {human_input}
@@ -617,7 +628,9 @@ exit_commands: [stop workflow, quit workflow, terminate workflow]
 intervene_before: [update_parameters]
 checkpointer: memory
 ```
+
 To reload and run the template:
+
 ```python
 from nodeology import load_workflow_from_template
 
@@ -632,6 +645,7 @@ result = workflow.run(initial_state)
 ```
 
 **Notes on workflow usage**
+
 - Functions need runtime implementation for security consideration, this includes function-based nodes, pre and post processes
 - `Nodeology` serializes `np.ndarray` specially, so if your node works with numpy array, it may not work with pure `langgraph` directly
 - Currently supports basic workflows, `langgraph`'s advanced patterns like subgraphs not yet supported

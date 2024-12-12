@@ -49,9 +49,7 @@ POSSIBILITY OF SUCH DAMAGE.
 ### "PEAR: A Robust and Flexible Automation Framework for Ptychography Enabled by Multiple Large Language Model Agents"
 ### https://arxiv.org/abs/2410.09034
 
-import os, sys
-
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import os
 from nodeology.prebuilt import (
     survey,
     formatter,

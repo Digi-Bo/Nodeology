@@ -167,3 +167,8 @@ cython_debug/
 # Nodeology
 artifacts/
 logs/
+
+# PyPI
+dist/
+*.egg-info/
+.pypirc
