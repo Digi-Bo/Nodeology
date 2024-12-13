@@ -65,13 +65,16 @@ OAI_RECOMMENDED_LLMS = [
     "o1-mini",
 ]
 OAI_RECOMMENDED_VLMS = [
-    "gpt-4" "gpt-4-turbo",
+    "gpt-4", 
+    "gpt-4-turbo",
     "gpt-4o",
 ]
 OLLAMA_RECOMMENDED_LLMS = [
     "llama3.1:70b",
     "llama3.1:405b",
-    "llama3.3" "llama3.3:70b" "qwen2.5:14b",
+    "llama3.3", 
+    "llama3.3:70b", 
+    "qwen2.5:14b",
     "qwen2.5:32b",
     "qwen2.5:72b",
     "qwen2.5-coder:32b",
