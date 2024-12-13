@@ -142,8 +142,8 @@ class Workflow(ABC):
     def __init__(
         self,
         name: Optional[str] = None,
-        llm_name: str = "gpt-4o",
-        vlm_name: Optional[str] = None,
+        llm_name: Union[str, LLM_Client] = "gpt-4o",
+        vlm_name: Optional[Union[str, VLM_Client]] = None,
         state_defs: Optional[Union[List, State]] = None,
         exit_commands: Optional[List[str]] = None,
         save_artifacts: bool = True,
@@ -173,11 +173,20 @@ class Workflow(ABC):
             raise ValueError("Workflow name cannot be empty")
 
         # Create clients
-        self.llm_client = get_client(llm_name)
-        assert isinstance(self.llm_client, LLM_Client), "Invalid LLM client"
+        if isinstance(llm_name, str):
+            self.llm_client = get_client(llm_name)
+        elif isinstance(llm_name, LLM_Client):
+            self.llm_client = llm_name
+        else:
+            raise ValueError("llm_name must be a string or LLM_Client instance")
+
         if vlm_name:
-            self.vlm_client = get_client(vlm_name)
-            assert isinstance(self.vlm_client, VLM_Client), "Invalid VLM client"
+            if isinstance(vlm_name, str):
+                self.vlm_client = get_client(vlm_name)
+            elif isinstance(vlm_name, VLM_Client):
+                self.vlm_client = vlm_name
+            else:
+                raise ValueError("vlm_name must be a string or VLM_Client instance")
         else:
             self.vlm_client = None
             logger.warning(
