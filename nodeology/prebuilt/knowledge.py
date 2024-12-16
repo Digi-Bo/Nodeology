@@ -55,8 +55,6 @@ from nodeology.client import R2R_Client
 from nodeology.state import State
 from nodeology.node import Node, as_node
 from nodeology.log import log_print_color
-from marker.convert import convert_single_pdf
-from marker.models import load_all_models
 
 MARKER_API_URL = "https://www.datalab.to/api/v1/marker"
 DATALAB_API_KEY = os.environ.get("DATALAB_API_KEY")
@@ -157,8 +155,15 @@ def pdf2md(file_name, file_path, output_dir, api_key=DATALAB_API_KEY):
                 # Return markdown content and list of image paths
                 return data["markdown"], image_paths
     else:
-        model_lst = load_all_models()
-        full_text, images, _ = convert_single_pdf(file_path, model_lst)
+        from marker.converters.pdf import PdfConverter
+        from marker.models import create_model_dict
+        from marker.output import text_from_rendered
+
+        converter = PdfConverter(
+            artifact_dict=create_model_dict(),
+        )
+        rendered = converter(file_path)
+        full_text, _, images = text_from_rendered(rendered)
         # Create a folder for images
         os.makedirs(images_folder, exist_ok=True)
 
