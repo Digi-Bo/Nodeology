@@ -53,6 +53,14 @@ Through its composable node architecture, graph-based workflow orchestration, an
 
 ### Installation
 
+To use the latest development version:
+
+```bash
+pip install git+https://github.com/xyin-anl/Nodeology.git
+```
+
+To use the latest release version:
+
 ```bash
 pip install nodeology
 ```
