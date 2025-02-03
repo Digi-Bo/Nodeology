@@ -867,7 +867,9 @@ class Workflow(ABC):
         else:
             return isinstance(value, expected_type)
 
-    def initialize(self, init_values: Optional[Dict[str, Any]] = None) -> None:
+    def initialize(
+        self, init_values: Optional[Dict[str, Any]] = None, recursion_limit=99999999
+    ) -> None:
         """Initialize the workflow state with proper None handling and type checking"""
         assert hasattr(self, "graph"), "Workflow graph must be defined"
         assert isinstance(
@@ -924,7 +926,10 @@ class Workflow(ABC):
                         )
                     default_state[field] = value
 
-        self.langgraph_config = {"configurable": {"thread_id": self.log_name}}
+        self.langgraph_config = {
+            "configurable": {"thread_id": self.log_name},
+            "recursion_limit": recursion_limit,
+        }
         self.graph.update_state(
             config=self.langgraph_config,
             values=default_state,
