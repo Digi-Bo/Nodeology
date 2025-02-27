@@ -10,7 +10,7 @@ with open("requirements.txt", "r", encoding="utf-8") as fh:
 
 setup(
     name="nodeology",
-    version="0.0.1",
+    version="0.0.2",
     author="Xiangyu Yin",
     author_email="xyin@anl.gov",
     description="Foundation AI-Enhanced Scientific Workflow",
