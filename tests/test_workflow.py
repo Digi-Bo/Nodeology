@@ -79,7 +79,11 @@ from nodeology.workflow import (
 from nodeology.client import LLM_Client
 from nodeology.state import State
 from nodeology.node import Node, as_node
-from nodeology.prebuilt import HilpState
+
+
+class HilpState(State):
+    questions: str
+    response: str
 
 
 class TestWorkflowBase:
@@ -1306,11 +1310,9 @@ Final output: {output}"""
             processed_text = f"Processed: {output.upper()}"
             return processed_text, True
 
-        custom_nodes = {"process": process_data}
-
         # Load the workflow back from the template
         reloaded_workflow = load_workflow_from_template(
-            export_path, custom_nodes=custom_nodes
+            export_path, node_registry={"process": process_data}
         )
 
         # Verify basic properties

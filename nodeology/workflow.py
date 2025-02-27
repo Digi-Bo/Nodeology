@@ -84,8 +84,7 @@ from nodeology.state import (
     _resolve_state_type,
     _type_from_str,
 )
-from nodeology.node import Node
-from nodeology.prebuilt import prebuilt_states, prebuilt_nodes
+from nodeology.node import Node, as_node, record_messages
 
 
 class Workflow(ABC):
@@ -150,6 +149,7 @@ class Workflow(ABC):
         debug_mode: bool = False,
         max_history: int = 1000,
         checkpointer: Union[BaseCheckpointSaver, str] = "memory",
+        tracing: bool = False,
         **kwargs,
     ) -> None:
         """Initialize workflow
@@ -163,6 +163,7 @@ class Workflow(ABC):
             save_artifacts: Whether to save state artifacts
             debug_mode: Enable debug logging
             max_history: Maximum number of states to keep in history
+            tracing: Whether to enable Langfuse tracing (defaults to False)
         """
         # Generate default name if none provided
         self.name = (
@@ -172,19 +173,34 @@ class Workflow(ABC):
         if not self.name:
             raise ValueError("Workflow name cannot be empty")
 
+        # Store tracing configuration
+        self.tracing = tracing
+
+        # Configure Langfuse if tracing is enabled
+        if self.tracing:
+            from nodeology.client import configure_langfuse
+
+            configure_langfuse(enabled=True)
+
         # Create clients
         if isinstance(llm_name, str):
-            self.llm_client = get_client(llm_name)
+            self.llm_client = get_client(llm_name, tracing_enabled=self.tracing)
         elif isinstance(llm_name, LLM_Client):
             self.llm_client = llm_name
+            # If it's a LiteLLM_Client, set tracing_enabled
+            if hasattr(self.llm_client, "tracing_enabled"):
+                self.llm_client.tracing_enabled = self.tracing
         else:
             raise ValueError("llm_name must be a string or LLM_Client instance")
 
         if vlm_name:
             if isinstance(vlm_name, str):
-                self.vlm_client = get_client(vlm_name)
+                self.vlm_client = get_client(vlm_name, tracing_enabled=self.tracing)
             elif isinstance(vlm_name, VLM_Client):
                 self.vlm_client = vlm_name
+                # If it's a LiteLLM_Client, set tracing_enabled
+                if hasattr(self.vlm_client, "tracing_enabled"):
+                    self.vlm_client.tracing_enabled = self.tracing
             else:
                 raise ValueError("vlm_name must be a string or VLM_Client instance")
         else:
@@ -736,7 +752,8 @@ class Workflow(ABC):
                         debug=self.debug_mode,
                         k=config["kwargs"],
                     ):
-                        return n(state, c, debug=debug, **k)
+                        # Pass workflow and node to client for metadata tracking
+                        return n(state, c, debug=debug, workflow=self, node=n, **k)
 
                     self.workflow.add_node(node_name, wrapped_func)
                     added_nodes.add(node_name)
@@ -1666,19 +1683,11 @@ def _interpolate_variables(template: Dict, kwargs: Dict) -> Dict:
 
 def load_workflow_from_template(
     template_path: str,
-    node_registry: Optional[Dict[str, Node]] = prebuilt_nodes,
-    state_registry: Optional[Dict[str, State]] = prebuilt_states,
-    custom_nodes: Optional[Dict[str, Node]] = None,
-    custom_states: Optional[Dict[str, State]] = None,
+    node_registry: Optional[Dict[str, Node]] = {},
+    state_registry: Optional[Dict[str, State]] = {},
     **kwargs,
 ) -> Workflow:
     """Create a Workflow instance from a YAML template file."""
-    # Combine registries
-    if custom_nodes:
-        node_registry = {**node_registry, **custom_nodes}
-    if custom_states:
-        state_registry = {**state_registry, **custom_states}
-
     # Load and validate template
     template = _safe_read_template(template_path, node_registry, state_registry)
     template = _interpolate_variables(template, kwargs)
@@ -1710,6 +1719,10 @@ def load_workflow_from_template(
 
             # Process template values first, then kwargs
             for template_key, param_name in param_mappings.items():
+                # Skip tracing from template to prevent it from being included
+                if template_key == "tracing":
+                    continue
+
                 if template_key in template:
                     workflow_kwargs[param_name] = template[template_key]
                 elif param_name in kwargs:
@@ -1718,6 +1731,7 @@ def load_workflow_from_template(
             # Set defaults for required parameters
             workflow_kwargs.setdefault("llm_name", "gpt-4o")
             workflow_kwargs.setdefault("vlm_name", None)
+            workflow_kwargs.setdefault("tracing", False)  # Always default to False
             workflow_kwargs["state_defs"] = state_defs
 
             # Add remaining kwargs

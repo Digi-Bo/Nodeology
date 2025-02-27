@@ -7,8 +7,9 @@ Thank you for your interest in contributing to Nodeology! This document provides
 ### Code Contributions
 
 1. **Core Framework**
+
    - Bug fixes and improvements
-   - Performance optimizations 
+   - Performance optimizations
    - New features
    - Test coverage
 
@@ -28,18 +29,21 @@ Thank you for your interest in contributing to Nodeology! This document provides
 ### Research Collaborations
 
 1. **Workflow Patterns**
+
    - Novel automation patterns
    - Optimization strategies
    - Human-AI interaction interfaces
    - Error handling approaches
 
 2. **Scientific Integration**
+
    - Domain-specific applications
    - Instrument interfaces
    - Data processing pipelines
    - Analysis tools
 
 3. **Evaluation Methods**
+
    - Benchmark development
    - Performance metrics
    - Reliability assessment
@@ -54,6 +58,7 @@ Thank you for your interest in contributing to Nodeology! This document provides
 ## Getting Started
 
 1. **Development Setup**
+
    ```bash
    # Clone repository
    git clone https://github.com/xyin-anl/nodeology.git
@@ -61,10 +66,13 @@ Thank you for your interest in contributing to Nodeology! This document provides
 
    # Create virtual environment using venv or conda
    python -m venv venv
-   source venv/bin/activate  
+   source venv/bin/activate
 
    # Install dependencies
    pip install -r requirements.txt
+
+   # Install pytest
+   pip install pytest
 
    # Run tests
    pytest tests/
@@ -73,6 +81,7 @@ Thank you for your interest in contributing to Nodeology! This document provides
 ## Guidelines
 
 1. **Code Contributions**
+
    - Fork repository
    - Create feature branch
    - Submit pull request
@@ -83,6 +92,7 @@ Thank you for your interest in contributing to Nodeology! This document provides
    - Include example usage if possible
 
 2. **Documentation**
+
    - Clear, concise writing
    - Practical examples
    - Proper formatting

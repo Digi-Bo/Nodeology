@@ -50,7 +50,6 @@ from string import Formatter
 from inspect import signature
 from typing import Optional, Annotated, List, Union, Dict, Callable, Any
 import ast
-import re
 
 from nodeology.state import State
 from nodeology.log import log_print_color
@@ -620,11 +619,17 @@ class Node:
                     messages=messages,
                     images=image_paths,
                     format=self.sink_format,
+                    workflow=kwargs.get("workflow"),
+                    node=self,
+                    previous_node_type=state["previous_node_type"],
                 )
             else:
                 response = client(
                     messages=messages,
                     format=self.sink_format,
+                    workflow=kwargs.get("workflow"),
+                    node=self,
+                    previous_node_type=state["previous_node_type"],
                 )
 
         log_print_color(f"Response: {response}", "white", False)

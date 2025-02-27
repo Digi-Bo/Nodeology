@@ -67,21 +67,29 @@ pip install nodeology
 
 ### Environment Setup
 
-Nodeology requires API access to language models. Set up your environment variables:
+Nodeology supports various cloud-based/local foundation models via [LiteLLM](https://docs.litellm.ai/docs/), see [provider list](https://docs.litellm.ai/docs/providers). Most of cloud-based models usage requires setting up API key. For example:
 
 ```bash
 # For OpenAI models
 export OPENAI_API_KEY='your-api-key'
 
-# For Anthropic models (optional)
+# For Anthropic models
 export ANTHROPIC_API_KEY='your-api-key'
 
-# For Together AI models
-export TOGETHER_API_KEY='your-api-key'
+# For Gemini models
+export GEMINI_API_KEY='your-api-key'
 
-# For local models via Ollama (optional)
-# First install Ollama, then models will be downloaded automatically
+# For Together AI hosted open weight models
+export TOGETHER_API_KEY='your-api-key'
 ```
+
+The field of foundation models is evolving rapidly with new and improved models emerging frequently. As of **February 2025**, we recommend the following models based on their strengths:
+
+- **gpt-4o**: Excellent for broad general knowledge, writing tasks, and conversational interactions
+- **o3-mini**: Good balance of math, coding, and reasoning capabilities at a lower price point
+- **anthropic/claude-3.7**: Strong performance in general knowledge, math, science, and coding with well-constrained outputs
+- **gemini/gemini-2.0-flash**: Effective for general knowledge tasks with a large context window for processing substantial information
+- **together_ai/deepseek-ai/DeepSeek-R1**: Exceptional reasoning, math, science, and coding capabilities with transparent thinking processes
 
 ### Basic Usage
 
@@ -149,7 +157,8 @@ class TextEnhancementWorkflow(Workflow):
 # 4. Run workflow
 workflow = TextEnhancementWorkflow(
     llm_name="gpt-4o",  # Or your preferred model
-    save_artifacts=True
+    save_artifacts=True,
+    tracing=True  # Enable Langfuse tracing (default)
 )
 
 initial_state = {
@@ -170,20 +179,61 @@ This example demonstrates:
 - Defining a simple workflow with two connected nodes
 - Running the workflow and accessing results
 
+#### Langfuse Tracing (Optional)
+
+Nodeology supports [Langfuse](https://langfuse.com/) for observability and tracing of LLM/VLM calls. To use Langfuse:
+
+1. Set up a Langfuse account and get your API keys
+2. Configure Langfuse with your keys:
+
+```bash
+# Set environment variables
+export LANGFUSE_PUBLIC_KEY='your-public-key'
+export LANGFUSE_SECRET_KEY='your-secret-key'
+export LANGFUSE_HOST='https://cloud.langfuse.com'  # Or your self-hosted URL
+```
+
+Or configure programmatically:
+
+```python
+from nodeology.client import configure_langfuse
+
+configure_langfuse(
+    public_key='your-public-key',
+    secret_key='your-secret-key',
+    host='https://cloud.langfuse.com'  # Optional
+)
+```
+
+You can enable or disable tracing when initializing a workflow:
+
+```python
+# Create workflow with tracing disabled (default)
+workflow = MyWorkflow(
+    llm_name="gpt-4o",
+    tracing=False  # This is the default
+)
+
+# Create workflow with tracing enabled
+workflow_w_tracing = MyWorkflow(
+    llm_name="gpt-4o",
+    tracing=True
+)
+```
+
 ### Next Steps
 
 After getting familiar with the basics:
 
-1. Check out the [Particle Trajectory Analysis](examples/particle_trajectory_analysis.py) example for a more complex workflow
-2. Learn about `nodeology` concepts and build the trajectory analysis example along the way
-3. Review pre-built components in `nodeology.prebuilt` for common research tasks
+1. Continue reading this readme to build a particle trajectory analysis workflow and learn about nodeology concepts along the way
+2. Check out the [nodeology examples repository](https://github.com/xyin-anl/nodeology_examples) for nodes and workflow examples
 
 ## 💡 Concepts
 
-To illustrate nodeology's concepts, we'll build a complex workflow for analyzing charged particle trajectories in electromagnetic fields, as illustrated in the flowchart below. This example demonstrates key features of nodelogy such as **conditional branching**, **numerical calculation integration**, **human in the loop**, **closed-loop iterations**, **vision models usage**, **structured generation** etc. You can directly check the complete script in `examples/particle_trajectory_analysis.py` or go through the following discussions.
+To illustrate nodeology's concepts, we'll build a complex workflow for analyzing charged particle trajectories in electromagnetic fields, as illustrated in the flowchart below. This example demonstrates key features of nodelogy such as **conditional branching**, **numerical calculation integration**, **human in the loop**, **closed-loop iterations**, **vision models usage**, **structured generation** etc. The complete script is available at `workflows/particle_trajectory_analysis.py` in the [nodeology examples repository](https://github.com/xyin-anl/nodeology_examples).
 
 <div align="center">
-  <img src="examples/particle_trajectory_analysis.png" alt="Example Workflow" width="240"/>
+  <img src="https://raw.githubusercontent.com/xyin-anl/nodeology_examples/main/workflows/particle_trajectory_analysis.png" alt="Example Workflow" width="240"/>
   <h3></h3>
 </div>
 
@@ -241,20 +291,7 @@ class ParticleState(State):
     updated_parameters: dict        # Updated parameter values
 ```
 
-In `nodeology`, some pre-built states are available as starting points for users to explore and start building their own states for special scientific problems:
-
-```python
-from nodeology.prebuilt import (
-    HilpState,               # For human-in-the-loop processes
-    CodingState,             # For code generation and execution
-    ParamsOptState,          # For parameter optimization processes
-    RecommendationState,     # For recommendation systems
-    KnowledgeState,          # For knowledge extraction tasks
-    RAGState,                # For retrieval-augmented generation
-    PlanningState,           # For planning processes
-    DiagnosisState           # For diagnostic workflows
-)
-```
+In the [nodeology examples repository](https://github.com/xyin-anl/nodeology_examples), some example states are available at `states.py` as starting points for users to explore and start building their own states for special scientific problems
 
 **Notes on state usage**:
 
@@ -384,34 +421,31 @@ def calculate_trajectory(
 
 In the example, we also used a function-based node for plotting and designed a mini terminal program to carry out pre-defined user interactions. Again, we aim to use foundation AI only when it is necessary.
 
-#### Pre-built research `Node`s
+#### Example research `Node`s
 
-To help users get started and design their own nodes, we have included some pre-built research `Node`s:
+To help users get started and design their own nodes, we have some example research `Node`s at `nodes` directory in the [nodeology examples repository](https://github.com/xyin-anl/nodeology_examples), below is a list of them:
 
 ```python
-from nodeology.prebuilt import (
-    planner,                    # Experiment planning and optimization
-    execute_code,               # Safe code execution with error handling
-    code_rewriter,              # Code adaptation and optimization
-    error_corrector,            # Automated error fixing
-    code_tweaker,               # Performance optimization
-    code_explainer,             # Code documentation generation
-    pdf2md,                     # PDF to markdown conversion
-    content_summarizer,         # Document summarization
-    attributes_extractor,       # Extract structured information
-    effect_analyzer,            # Analyze cause-effect relationships
-    questions_generator,        # Generate research questions
-    log_summarizer,             # Experiment log analysis
-    insights_extractor,         # Extract key insights
-    context_retriever,          # Knowledge base search
-    context_augmented_generator,# Context-aware text generation
-    formatter,                  # Parameter formatting and validation
-    recommender,                # Parameter recommendations
-    updater,                    # Parameter updates with validation
-    conversation_summarizer,    # Dialog management
-    survey,                     # Systematic data collection
-    commentator                 # Result analysis and feedback
-)
+planner,                    # Experiment planning and optimization
+execute_code,               # Safe code execution with error handling
+code_rewriter,              # Code adaptation and optimization
+error_corrector,            # Automated error fixing
+code_tweaker,               # Performance optimization
+code_explainer,             # Code documentation generation
+pdf2md,                     # PDF to markdown conversion
+content_summarizer,         # Document summarization
+attributes_extractor,       # Extract structured information
+effect_analyzer,            # Analyze cause-effect relationships
+questions_generator,        # Generate research questions
+insights_extractor,         # Extract key insights
+context_retriever,          # Knowledge base search
+context_augmented_generator,# Context-aware text generation
+formatter,                  # Parameter formatting and validation
+recommender,                # Parameter recommendations
+updater,                    # Parameter updates with validation
+conversation_summarizer,    # Dialog management
+survey,                     # Systematic data collection
+commentator                 # Result analysis and feedback
 ```
 
 **Notes on node usage**: User defined nodes are to be combined and composed into a workflow. But those nodes by themselves are also mini programs that can run on their own. To run a single node, you just need to provide:
@@ -661,14 +695,8 @@ result = workflow.run(initial_state)
 
 ## 🔬 Featured Applications
 
-### [PEAR: Ptychography Automation Framework](https://arxiv.org/abs/2410.09034)
-
-PEAR demonstrates nodeology's capabilities in intelligent computational imaging automation with knowledge-guided code generation, parameter recommendation and automatic image quality diagnosis. `examples/ptycho_params_opt.py` provides a simplified version without the knowledge base for user data securty. The overall workflow can be illustrated as below
-
-<div align="center">
-  <img src="examples/ptycho_params_opt.png" alt="PEAR" width="200"/>
-  <h3></h3>
-</div>
+- [PEAR: Ptychography automation framework](https://github.com/xyin-anl/nodeology_examples/blob/main/workflows/ptycho_params_opt.py)
+- [AutoScriptCopilot: TEM experiment control](https://github.com/xyin-anl/AutoScriptCopilot)
 
 ## 👥 Contributing & Collaboration
 

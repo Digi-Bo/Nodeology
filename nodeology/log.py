@@ -71,47 +71,70 @@ def setup_logging(log_dir, log_name, debug_mode=False, base_dir=None):
     # Create handlers
     console_handler = logging.StreamHandler(sys.stdout)
 
+    # Set the root logger level to DEBUG to capture all messages
+    root_logger.setLevel(logging.DEBUG)
+
+    # Use base_dir if provided, otherwise use log_dir directly
+    full_log_dir = os.path.join(base_dir, log_dir) if base_dir else log_dir
+
+    if not os.path.exists(full_log_dir):
+        os.makedirs(full_log_dir)
+
+    log_file_path = f"{full_log_dir}/{log_name}.log"
+
+    if os.path.isfile(log_file_path):
+        log_print_color(
+            f"WARNING: {log_file_path} already exists and will be overwritten.",
+            "red",
+        )
+
+    # Create file handler for both modes
+    file_handler = logging.FileHandler(log_file_path, "w")
+
     if debug_mode:
-        # Debug mode configuration - console only
-        console_handler.setLevel(logging.LOGONLY)
+        # Debug mode configuration
+        # Console shows DEBUG and above
+        console_handler.setLevel(logging.DEBUG)
         console_format = logging.Formatter(
             "%(asctime)s - %(levelname)s - %(name)s - %(message)s"
         )
         console_handler.setFormatter(console_format)
-        root_logger.setLevel(logging.DEBUG)
-        root_logger.addHandler(console_handler)
+
+        # File handler captures everything
+        file_handler.setLevel(logging.DEBUG)
+        file_format = logging.Formatter(
+            "%(asctime)s - %(levelname)s - %(name)s - %(message)s"
+        )
+        file_handler.setFormatter(file_format)
     else:
-        # Use base_dir if provided, otherwise use log_dir directly
-        full_log_dir = os.path.join(base_dir, log_dir) if base_dir else log_dir
-
-        if not os.path.exists(full_log_dir):
-            os.makedirs(full_log_dir)
-
-        log_file_path = f"{full_log_dir}/{log_name}.log"
-
-        if os.path.isfile(log_file_path):
-            log_print_color(
-                f"WARNING: {log_file_path} already exists and will be overwritten.",
-                "red",
-            )
-
         # Production mode configuration
-        file_handler = logging.FileHandler(log_file_path, "w")
-
+        # Console only shows PRINTLOG and WARNING+ messages
         console_handler.setLevel(logging.PRINTLOG)
-        file_handler.setLevel(logging.LOGONLY)
-
         console_format = logging.Formatter("%(message)s")
+        console_handler.setFormatter(console_format)
+
+        # File handler captures everything (DEBUG and above)
+        file_handler.setLevel(logging.DEBUG)
         file_format = logging.Formatter(
             "%(asctime)s - %(message)s", datefmt="%Y%m%d-%H:%M:%S"
         )
-
-        console_handler.setFormatter(console_format)
         file_handler.setFormatter(file_format)
 
-        root_logger.setLevel(logging.DEBUG)
-        root_logger.addHandler(console_handler)
-        root_logger.addHandler(file_handler)
+    # Add handlers to root logger
+    root_logger.addHandler(console_handler)
+    root_logger.addHandler(file_handler)
+
+    # Configure third-party loggers to be less verbose
+    # This prevents them from cluttering the console
+    for logger_name in logging.root.manager.loggerDict:
+        if logger_name != __name__ and not logger_name.startswith("nodeology"):
+            third_party_logger = logging.getLogger(logger_name)
+            if debug_mode:
+                # In debug mode, third-party loggers show WARNING and above
+                third_party_logger.setLevel(logging.WARNING)
+            else:
+                # In production mode, third-party loggers show ERROR and above
+                third_party_logger.setLevel(logging.ERROR)
 
     # Store handlers in logger for later cleanup
     root_logger.handlers_to_close = root_logger.handlers[:]

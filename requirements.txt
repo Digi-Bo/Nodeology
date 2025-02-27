@@ -1,10 +1,7 @@
 requests
-pytest
 pyyaml
 typing-extensions
 numpy
-scipy
-openai
 langgraph
-marker-pdf
-r2r
+litellm>=1.0.0
+langfuse>=2.0.0
