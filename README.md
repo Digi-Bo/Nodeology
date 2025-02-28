@@ -91,6 +91,8 @@ The field of foundation models is evolving rapidly with new and improved models 
 - **gemini/gemini-2.0-flash**: Effective for general knowledge tasks with a large context window for processing substantial information
 - **together_ai/deepseek-ai/DeepSeek-R1**: Exceptional reasoning, math, science, and coding capabilities with transparent thinking processes
 
+**For Argonne Users:** if you are within Argonne network, you will have access to OpenAI's models through Argonne's ARGO inference service and ALCF's open weights model inference service for free. Please check this [link](https://gist.github.com/xyin-anl/0cc744a7862e153414857b15fe31b239) to see how to use them
+
 ### Basic Usage
 
 Here's a bare minimum example that demonstrates the core concepts of nodeology - creating a workflow that analyzes and improves text:
