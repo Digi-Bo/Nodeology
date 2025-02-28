@@ -1122,7 +1122,6 @@ def _validate_template_structure(template: Dict) -> None:
     - vlm: string
     - exit_commands: array of strings
     - intervene_before: array of strings
-    - checkpointer: string
 
     Args:
         template: Template dictionary to validate
@@ -1142,7 +1141,6 @@ def _validate_template_structure(template: Dict) -> None:
             "vlm": {"type": "string"},
             "exit_commands": {"type": "array", "items": {"type": "string"}},
             "intervene_before": {"type": "array", "items": {"type": "string"}},
-            "checkpointer": {"type": "string"},
         },
         "additionalProperties": False,
     }
@@ -1719,10 +1717,6 @@ def load_workflow_from_template(
 
             # Process template values first, then kwargs
             for template_key, param_name in param_mappings.items():
-                # Skip tracing from template to prevent it from being included
-                if template_key == "tracing":
-                    continue
-
                 if template_key in template:
                     workflow_kwargs[param_name] = template[template_key]
                 elif param_name in kwargs:
@@ -1839,7 +1833,7 @@ def load_workflow_from_template(
             self_.compile(
                 interrupt_before=interrupt_before,
                 auto_input_nodes=True,
-                checkpointer="memory",
+                checkpointer=MemorySaver(serde=NumpyJsonPlusSerializer()),
             )
 
     return UserWorkflow(**kwargs)
@@ -1887,9 +1881,6 @@ def export_workflow_to_template(
             node[:-6] if node.endswith("_input") else node
             for node in workflow._interrupt_before
         ]
-
-    if workflow.checkpointer:
-        template["checkpointer"] = workflow.checkpointer
 
     # Validate template
     node_registry = {}

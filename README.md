@@ -520,8 +520,7 @@ After defining the workflow, you can instantiate with custom configurations
         vlm_name="gpt-4o",
         exit_commands='stop analysis',
         save_artifacts=True,
-        max_history=500,
-        checkpointer='memory'
+        max_history=500
     )
 ```
 
@@ -668,7 +667,6 @@ llm: gpt-4o
 vlm: gpt-4o
 exit_commands: [stop workflow, quit workflow, terminate workflow]
 intervene_before: [update_parameters]
-checkpointer: memory
 ```
 
 To reload and run the template:
