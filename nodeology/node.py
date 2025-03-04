@@ -875,15 +875,13 @@ def remove_markdown_blocks_formatting(text: str) -> str:
     """
     lines = text.split("\n")
     cleaned_lines = []
-    in_code_block = False
 
     for line in lines:
         stripped_line = line.strip()
         # Check if line starts with backticks (more robust than exact matches)
         if stripped_line.startswith("```"):
-            in_code_block = not in_code_block
             continue
-        if not in_code_block:
+        else:
             cleaned_lines.append(line)
 
     return "\n".join(cleaned_lines)
