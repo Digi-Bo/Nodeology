@@ -18,6 +18,11 @@ setup(
     long_description_content_type="text/markdown",
     url="https://github.com/xyin-anl/nodeology",
     packages=find_packages(),
+    include_package_data=True,
+    package_data={
+        "": ["*.md", "*.cff", "LICENSE"],
+        "nodeology": ["examples/*", "tests/*"],
+    },
     classifiers=[
         "Intended Audience :: Science/Research",
         "Programming Language :: Python :: 3",

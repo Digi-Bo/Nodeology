@@ -2,7 +2,7 @@
 > This package is actively in development, and breaking changes may occur.
 
 <div align="center">
-  <img src="public/logo.jpg" alt="Nodeology Logo" width="600"/>
+  <img src="assets/logo.jpg" alt="Nodeology Logo" width="600"/>
   <h3></h3>
 </div>
 

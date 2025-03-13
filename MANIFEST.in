@@ -1,3 +1,8 @@
 include LICENSE
 include README.md
 include requirements.txt
+include CITATION.cff
+include CONTRIBUTING.md
+recursive-include examples *
+recursive-include tests *
+recursive-include nodeology *
