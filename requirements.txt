@@ -7,3 +7,4 @@ kaleido
 langgraph
 litellm>=1.0.0
 langfuse>=2.0.0
+chainlit>=2.0.0
