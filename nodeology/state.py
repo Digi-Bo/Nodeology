@@ -48,6 +48,8 @@ POSSIBILITY OF SUCH DAMAGE.
 import json
 import logging
 import numpy as np
+import plotly.graph_objects as go
+import plotly.io as pio
 
 logger = logging.getLogger(__name__)
 from typing import TypedDict, List, Dict, Union, Any, get_origin, get_args
@@ -322,6 +324,11 @@ class StateEncoder(json.JSONEncoder):
                     "data": obj.tolist(),
                     "dtype": str(obj.dtype),
                 }
+            if isinstance(obj, go.Figure):
+                return {
+                    "__type__": "plotly_figure",
+                    "data": pio.to_json(obj),
+                }
             if hasattr(obj, "to_dict"):
                 return obj.to_dict()
             if isinstance(obj, bytes):
@@ -336,8 +343,9 @@ class StateEncoder(json.JSONEncoder):
             return str(obj)
 
 
-class NumpyJsonPlusSerializer(JsonPlusSerializer):
+class CustomSerializer(JsonPlusSerializer):
     NDARRAY_EXT_TYPE = 42  # Ensure this code doesn't conflict with other ExtTypes
+    PLOTLY_FIGURE_EXT_TYPE = 43  # New extension type for Plotly figures
 
     def _default(self, obj: Any) -> Union[str, Dict[str, Any]]:
         if isinstance(obj, np.ndarray):
@@ -347,11 +355,20 @@ class NumpyJsonPlusSerializer(JsonPlusSerializer):
                 "data": obj.tolist(),
                 "dtype": str(obj.dtype),
             }
+        if isinstance(obj, go.Figure):
+            return {
+                "lc": 2,
+                "type": "plotly_figure",
+                "data": pio.to_json(obj),
+            }
         return super()._default(obj)
 
     def _reviver(self, value: Dict[str, Any]) -> Any:
-        if value.get("lc", None) == 2 and value.get("type", None) == "ndarray":
-            return np.array(value["data"], dtype=value["dtype"])
+        if value.get("lc", None) == 2:
+            if value.get("type", None) == "ndarray":
+                return np.array(value["data"], dtype=value["dtype"])
+            elif value.get("type", None) == "plotly_figure":
+                return pio.from_json(value["data"])
         return super()._reviver(value)
 
     # Override dumps_typed to use instance method _msgpack_enc
@@ -386,6 +403,11 @@ class NumpyJsonPlusSerializer(JsonPlusSerializer):
         elif isinstance(obj, np.number):
             # Handle NumPy scalar types
             return obj.item()
+        elif isinstance(obj, go.Figure):
+            figure_json = pio.to_json(obj)
+            figure_packed = msgpack.packb(figure_json, use_bin_type=True)
+            return msgpack.ExtType(self.PLOTLY_FIGURE_EXT_TYPE, figure_packed)
+
         return super()._msgpack_default(obj)
 
     # Provide instance-level loads_typed
@@ -416,12 +438,42 @@ class NumpyJsonPlusSerializer(JsonPlusSerializer):
             array = np.frombuffer(array_data, dtype=metadata["dtype"])
             array = array.reshape(metadata["shape"])
             return array
+        elif code == self.PLOTLY_FIGURE_EXT_TYPE:
+            figure_json = msgpack.unpackb(
+                data, strict_map_key=False, ext_hook=self._msgpack_ext_hook
+            )
+            return pio.from_json(figure_json)
         else:
             return super()._msgpack_ext_hook(code, data)
 
 
+def convert_serialized_objects(obj):
+    """
+    Convert serialized objects back to their original form.
+    Currently handles:
+    - NumPy arrays (serialized as {"__type__": "ndarray", "data": [...], "dtype": "..."})
+    - Plotly figures (serialized as {"__type__": "plotly_figure", "data": "..."})
+
+    Args:
+        obj: The object to convert, which may contain serialized objects
+
+    Returns:
+        The object with any serialized objects converted back to their original form
+    """
+    if isinstance(obj, dict):
+        if "__type__" in obj:
+            if obj["__type__"] == "ndarray":
+                return np.array(obj["data"], dtype=obj["dtype"])
+            elif obj["__type__"] == "plotly_figure":
+                return pio.from_json(obj["data"])
+        return {k: convert_serialized_objects(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_serialized_objects(item) for item in obj]
+    return obj
+
+
 if __name__ == "__main__":
-    serializer = NumpyJsonPlusSerializer()
+    serializer = CustomSerializer()
     original_data = {
         "array": np.array([[1, 2, 3], [4, 5, 6]], dtype=np.float64),
         "scalar": np.float32(7.5),
@@ -435,6 +487,48 @@ if __name__ == "__main__":
             ],
         },
     }
+
+    # Create a more complex figure with multiple traces and customization
+    fig = go.Figure()
+
+    # Add a scatter plot with markers
+    fig.add_trace(
+        go.Scatter(
+            x=[1, 2, 3, 4, 5],
+            y=[4, 5.2, 6, 3.2, 8],
+            mode="markers+lines",
+            name="Series A",
+            marker=dict(size=10, color="blue", symbol="circle"),
+        )
+    )
+
+    # Add a bar chart
+    fig.add_trace(
+        go.Bar(
+            x=[1, 2, 3, 4, 5], y=[2, 3, 1, 5, 3], name="Series B", marker_color="green"
+        )
+    )
+
+    # Add a line plot with different style
+    fig.add_trace(
+        go.Scatter(
+            x=[1, 2, 3, 4, 5],
+            y=[7, 6, 9, 8, 7],
+            mode="lines",
+            name="Series C",
+            line=dict(width=3, dash="dash", color="red"),
+        )
+    )
+
+    # Update layout with title and axis labels
+    fig.update_layout(
+        title="Complex Test Figure",
+        xaxis_title="X Axis",
+        yaxis_title="Y Axis",
+        legend_title="Legend",
+        template="plotly_white",
+    )
+    original_data["figure"] = fig
 
     # Serialize the data
     _, serialized = serializer.dumps_typed(original_data)
@@ -467,5 +561,18 @@ if __name__ == "__main__":
             original_data["nested"]["list_of_arrays"],
         )
     )
+
+    assert isinstance(deserialized_data["figure"], go.Figure)
+    assert len(deserialized_data["figure"].data) == len(fig.data)
+    for i, trace in enumerate(fig.data):
+        assert deserialized_data["figure"].data[i].type == trace.type
+        # Compare x and y data if they exist
+        if hasattr(trace, "x") and trace.x is not None:
+            assert np.array_equal(deserialized_data["figure"].data[i].x, trace.x)
+        if hasattr(trace, "y") and trace.y is not None:
+            assert np.array_equal(deserialized_data["figure"].data[i].y, trace.y)
+
+    # Compare layout properties
+    assert deserialized_data["figure"].layout.title.text == fig.layout.title.text
 
     print("Serialization and deserialization test passed.")

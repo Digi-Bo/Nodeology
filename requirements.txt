@@ -2,6 +2,8 @@ requests
 pyyaml
 typing-extensions
 numpy
+plotly
+kaleido
 langgraph
 litellm>=1.0.0
 langfuse>=2.0.0

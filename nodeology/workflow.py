@@ -57,6 +57,8 @@ from abc import ABC, abstractmethod
 from collections import OrderedDict
 import numpy as np
 
+from nodeology.interface import run_chainlit_for_workflow
+
 # Ensure that TypedDict is imported correctly for all Python versions
 try:
     from typing import TypedDict, get_type_hints, is_typeddict
@@ -69,6 +71,8 @@ from langgraph.types import StateSnapshot
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import MemorySaver
 
+from chainlit import Message, AskUserMessage, run_sync
+
 from nodeology.log import (
     logger,
     log_print_color,
@@ -79,12 +83,12 @@ from nodeology.client import get_client, LLM_Client, VLM_Client
 from nodeology.state import (
     State,
     StateEncoder,
-    NumpyJsonPlusSerializer,
+    CustomSerializer,
     process_state_definitions,
     _resolve_state_type,
     _type_from_str,
 )
-from nodeology.node import Node, as_node, record_messages
+from nodeology.node import Node
 
 
 class Workflow(ABC):
@@ -165,6 +169,21 @@ class Workflow(ABC):
             max_history: Maximum number of states to keep in history
             tracing: Whether to enable Langfuse tracing (defaults to False)
         """
+        self._init_kwargs = {
+            "name": name,
+            "llm_name": llm_name,
+            "vlm_name": vlm_name,
+            "state_defs": state_defs,
+            "exit_commands": exit_commands,
+            "save_artifacts": save_artifacts,
+            "debug_mode": debug_mode,
+            "max_history": max_history,
+            "checkpointer": checkpointer,
+            "tracing": tracing,
+        }
+        # Add any additional kwargs
+        self._init_kwargs.update(kwargs)
+
         # Generate default name if none provided
         self.name = (
             name
@@ -693,6 +712,7 @@ class Workflow(ABC):
         interrupt_before: Optional[List[str]] = None,
         checkpointer: Optional[Union[str, BaseCheckpointSaver]] = None,
         auto_input_nodes: bool = True,
+        interrupt_before_phrases: Optional[Dict[str, str]] = None,
     ):
         """Compile the workflow with optional interrupt points and checkpointing"""
         if not hasattr(self, "workflow"):
@@ -701,11 +721,16 @@ class Workflow(ABC):
         # Setup checkpointer
         checkpointer = checkpointer if checkpointer else self.checkpointer
         if checkpointer == "memory":
-            checkpointer = MemorySaver(serde=NumpyJsonPlusSerializer())
+            checkpointer = MemorySaver(serde=CustomSerializer())
         elif not isinstance(checkpointer, BaseCheckpointSaver):
             raise ValueError(
                 "checkpointer must be 'memory' or a BaseCheckpointSaver instance"
             )
+
+        # Store interrupt_before_phrases
+        if interrupt_before_phrases is None:
+            interrupt_before_phrases = {}
+        self._interrupt_before_phrases = interrupt_before_phrases
 
         # Track input nodes if auto creation is enabled
         input_nodes = set()
@@ -956,19 +981,18 @@ class Workflow(ABC):
         self.state_history = []
         self.save_state()
 
-    def run(self, init_values: Optional[Dict] = None) -> Dict:
-        """Run the workflow until completion or interruption.
+    def run(self, init_values: Optional[Dict] = None, ui: bool = False) -> Dict:
+        """Run the workflow, optionally in Chainlit UI mode."""
+        if not ui:
+            log_print_color(
+                f"Starting {self.name} workflow for {self.user_name}", "green"
+            )
+            return self._run(init_values, ui=False)
+        else:
+            return run_chainlit_for_workflow(self, init_values)
 
-        Executes the workflow graph, handling human input and state management.
-
-        Args:
-            init_values: Optional initial state values
-
-        Returns:
-            Dict: Final workflow state values or error state
-        """
-        log_print_color(f"Starting {self.name} workflow for {self.user_name}", "green")
-
+    def _run(self, init_values: Optional[Dict] = None, ui: bool = False) -> Dict:
+        """Your existing run code that was previously in 'run' method."""
         # Initialize graph state
         graph_input = (
             self.graph.get_state(self.langgraph_config).values
@@ -995,7 +1019,22 @@ class Workflow(ABC):
                         return current_state.values if current_state else {}
 
                 # Get human input when the graph needs it
-                human_input = self._get_human_input()
+                # Attempt to fetch an interrupt phrase if we have one
+                # next_node might be something like "someNode_input"
+                # so we strip "_input" to get the real node name
+                real_node_name = current_state.next[0]
+                if real_node_name.endswith("_input"):
+                    real_node_name = real_node_name[:-6]
+
+                prompt_text = f"{self.user_name}: "
+                if (
+                    self._interrupt_before_phrases
+                    and real_node_name in self._interrupt_before_phrases
+                ):
+                    prompt_text = self._interrupt_before_phrases[real_node_name]
+
+                human_input = self._get_human_input(ui, prompt_text)
+
                 if self._should_exit(human_input):
                     return current_state.values if current_state else {}
 
@@ -1009,6 +1048,8 @@ class Workflow(ABC):
         except Exception as e:
             logger.error(f"Error during workflow execution: {str(e)}")
             error_state = {"error": str(e)}
+            exc_info = traceback.format_exc()
+            print(exc_info)
             if self.debug_mode:
                 raise
             return (
@@ -1028,11 +1069,12 @@ class Workflow(ABC):
         """
         return any(cmd in cmd_input.lower() for cmd in self.exit_commands)
 
-    def _get_human_input(self, mode: str = "cmd") -> str:
+    def _get_human_input(self, ui: bool = False, prompt: Optional[str] = None) -> str:
         """Get and log input from the user.
 
         Args:
-            mode: Input mode (currently only supports 'cmd')
+            ui: Whether we are in Chainlit UI mode
+            prompt: Optional custom prompt to display (falls back to f"{self.user_name}: " if None)
 
         Returns:
             str: User input
@@ -1040,10 +1082,13 @@ class Workflow(ABC):
         Raises:
             ValueError: If invalid input mode specified
         """
-        if mode == "cmd":
-            human_input = input(f"{self.user_name}: ")
+        if prompt is None:
+            prompt = f"{self.user_name}: "
+
+        if ui:
+            human_input = run_sync(AskUserMessage(content=prompt).send())["output"]
         else:
-            raise ValueError(f"Invalid input mode: {mode}")
+            human_input = input(prompt)
         logger.logonly(f"{self.user_name}: {human_input}")
         return human_input
 
@@ -1122,12 +1167,7 @@ def _validate_template_structure(template: Dict) -> None:
     - vlm: string
     - exit_commands: array of strings
     - intervene_before: array of strings
-
-    Args:
-        template: Template dictionary to validate
-
-    Raises:
-        ValueError: If template structure is invalid
+    - intervene_before_phrases: object mapping node names to prompt phrases
     """
     schema = {
         "type": "object",
@@ -1141,6 +1181,10 @@ def _validate_template_structure(template: Dict) -> None:
             "vlm": {"type": "string"},
             "exit_commands": {"type": "array", "items": {"type": "string"}},
             "intervene_before": {"type": "array", "items": {"type": "string"}},
+            "intervene_before_phrases": {
+                "type": "object",
+                "additionalProperties": {"type": "string"},
+            },
         },
         "additionalProperties": False,
     }
@@ -1458,6 +1502,10 @@ def _safe_read_template(template_path: str, node_registry: Dict, state_registry:
         raise ValueError("Template 'exit_commands' must be a list")
     if not isinstance(template.get("intervene_before", []), list):
         raise ValueError("Template 'intervene_before' must be a list")
+    if not isinstance(template.get("intervene_before_phrases", {}), dict):
+        raise ValueError(
+            "Template 'intervene_before_phrases' must be an object/dict of {nodeName: phrase}"
+        )
 
     # Validate node structure (but not content)
     for node_name, node_config in template["nodes"].items():
@@ -1743,6 +1791,7 @@ def load_workflow_from_template(
             """Create workflow structure from template configuration"""
             nodes_config = template["nodes"]
             interrupt_before = template.get("intervene_before", [])
+            interrupt_before_phrases = template.get("intervene_before_phrases", {})
 
             # Store original template configuration
             self_._node_configs = nodes_config.copy()
@@ -1833,7 +1882,8 @@ def load_workflow_from_template(
             self_.compile(
                 interrupt_before=interrupt_before,
                 auto_input_nodes=True,
-                checkpointer=MemorySaver(serde=NumpyJsonPlusSerializer()),
+                checkpointer=MemorySaver(serde=CustomSerializer()),
+                interrupt_before_phrases=interrupt_before_phrases,
             )
 
     return UserWorkflow(**kwargs)
@@ -1881,6 +1931,15 @@ def export_workflow_to_template(
             node[:-6] if node.endswith("_input") else node
             for node in workflow._interrupt_before
         ]
+
+    # If phrases are stored, export them to 'intervene_before_phrases'
+    if (
+        hasattr(workflow, "_interrupt_before_phrases")
+        and workflow._interrupt_before_phrases
+    ):
+        template["intervene_before_phrases"] = {
+            k: v for k, v in workflow._interrupt_before_phrases.items()
+        }
 
     # Validate template
     node_registry = {}

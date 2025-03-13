@@ -559,7 +559,9 @@ class Node:
                 message = message.replace(placeholder, original)
 
             # Record the formatted message
-            record_messages(state, [("user", message, "white")], False)
+            if "messages" not in state:
+                state["messages"] = []
+            state["messages"].append({"role": "user", "content": message})
 
             # Determine if we should use conversation mode
             should_use_conversation = (
@@ -844,24 +846,6 @@ def as_node(
         return node.func if as_function else node
 
     return decorator
-
-
-def record_messages(
-    state: State, messages: List[tuple[str, str, str]], print_to_console: bool = True
-):
-    """Record messages to state and log them with color.
-
-    Args:
-        state: State object to store messages in
-        messages: List of (role, message, color) tuples to record
-    """
-
-    for role, message, color in messages:
-        # Add check for messages key
-        if "messages" not in state:
-            state["messages"] = []
-        state["messages"].append({"role": role, "content": message})
-        log_print_color(f"{role}: {message}", color, print_to_console)
 
 
 def remove_markdown_blocks_formatting(text: str) -> str:

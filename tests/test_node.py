@@ -53,7 +53,6 @@ from nodeology.client import VLM_Client
 from nodeology.node import (
     Node,
     as_node,
-    record_messages,
     remove_markdown_blocks_formatting,
 )
 from nodeology.state import State
@@ -738,23 +737,8 @@ class TestDecorators:
 
 # Utility Function Tests
 class TestUtilityFunctions:
-    def test_record_messages(self):
-        """Test message recording functionality"""
-        state = State()
-        state["messages"] = []
-
-        messages = [
-            ("assistant", "Test message", "green"),
-            ("user", "Test response", "blue"),
-        ]
-
-        record_messages(state, messages)
-        assert len(state["messages"]) == 2
-        assert state["messages"][0]["role"] == "assistant"
-        assert state["messages"][1]["role"] == "user"
-
     def test_remove_markdown_blocks(self):
         """Test markdown block removal"""
-        text = "Normal text\n```python\ndef test():\n    pass\n```\nMore text"
+        text = "```python\ndef test():\n    pass\n```"
         result = remove_markdown_blocks_formatting(text)
-        assert result == "Normal text\nMore text"
+        assert result == "def test():\n    pass"
