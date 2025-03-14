@@ -255,7 +255,7 @@ class LiteLLM_Client(VLM_Client):
 
         # Construct the model name for LiteLLM based on whether provider is specified
         # If provider is None, LiteLLM will infer the provider from the model name
-        self.model = f"{provider}/{model_name}" if provider else model_name
+        self.model_name = f"{provider}/{model_name}" if provider else model_name
 
     def collect_langfuse_metadata(
         self,
@@ -395,7 +395,7 @@ class LiteLLM_Client(VLM_Client):
         try:
             # Use LiteLLM's built-in retry mechanism with Langfuse metadata
             response = litellm.completion(
-                model=self.model,
+                model=self.model_name,
                 messages=messages,
                 response_format=response_format,
                 num_retries=3,
@@ -410,11 +410,11 @@ class LiteLLM_Client(VLM_Client):
                 try:
                     json.loads(content)
                 except json.JSONDecodeError:
-                    raise ValueError(f"Invalid JSON response from {self.model}")
+                    raise ValueError(f"Invalid JSON response from {self.model_name}")
 
             return content
 
         except Exception as e:
             raise ValueError(
-                f"Failed to generate response from {self.model}. Error: {str(e)}"
+                f"Failed to generate response from {self.model_name}. Error: {str(e)}"
             )

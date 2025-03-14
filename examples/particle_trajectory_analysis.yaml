@@ -1,0 +1,74 @@
+name: TrajectoryWorkflow_03_13_2025_20_06_45
+state_defs:
+- current_node_type: str
+- previous_node_type: str
+- human_input: str
+- input: str
+- output: str
+- messages: List[dict]
+- mass: float
+- charge: float
+- initial_velocity: ndarray
+- E_field: ndarray
+- B_field: ndarray
+- confirm_parameters: bool
+- parameters_updater_output: str
+- positions: List[ndarray]
+- trajectory_plot: str
+- trajectory_plot_path: str
+- analysis_result: dict
+- continue_simulation: bool
+nodes:
+  display_parameters:
+    type: display_parameters
+    next: ask_confirm_parameters
+  ask_confirm_parameters:
+    type: ask_confirm_parameters
+    sink: confirm_parameters
+    next:
+      condition: confirm_parameters
+      then: calculate_trajectory
+      otherwise: ask_parameters_input
+  ask_parameters_input:
+    type: ask_parameters_input
+    sink: human_input
+    next: update_parameters
+  update_parameters:
+    type: prompt
+    template: 'Update the parameters based on the user''s input. Current parameters:
+      mass: {mass} charge: {charge} initial_velocity: {initial_velocity} E_field:
+      {E_field} B_field: {B_field} User input: {human_input} Please return the updated
+      parameters in JSON format. {{ "mass": float, "charge": float, "initial_velocity":
+      list[float], "E_field": list[float], "B_field": list[float] }}'
+    sink: parameters_updater_output
+    next: display_parameters
+  calculate_trajectory:
+    type: calculate_trajectory
+    sink: positions
+    next: plot_trajectory
+  plot_trajectory:
+    type: plot_trajectory
+    sink: [trajectory_plot, trajectory_plot_path]
+    next: analyze_trajectory
+  analyze_trajectory:
+    type: prompt
+    template: 'Analyze this particle trajectory plot. Please determine: 1. The type
+      of motion (linear, circular, helical, or chaotic) 2. Key physical features (radius,
+      period, pitch angle if applicable) 3. Explanation of the motion 4. Anomalies
+      in the motion Output in JSON format: {{ "trajectory_type": "type_name", "key_features":
+      { "feature1": value, "feature2": value }, "explanation": "detailed explanation",
+      "anomalies": "anomaly description" }}'
+    sink: analysis_result
+    image_keys: trajectory_plot_path
+    next: ask_continue_simulation
+  ask_continue_simulation:
+    type: ask_continue_simulation
+    sink: continue_simulation
+    next:
+      condition: continue_simulation
+      then: display_parameters
+      otherwise: END
+entry_point: display_parameters
+llm: gemini/gemini-2.0-flash
+vlm: gemini/gemini-2.0-flash
+exit_commands: [stop workflow, quit workflow, terminate workflow]

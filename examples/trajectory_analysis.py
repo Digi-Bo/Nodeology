@@ -426,6 +426,14 @@ if __name__ == "__main__":
         debug_mode=False,
     )
 
+    # # Export workflow to YAML file
+    # workflow.to_yaml("particle_trajectory_analysis.yaml")
+
+    # # Print workflow graph
+    # workflow.graph.get_graph().draw_mermaid_png(
+    #     output_file_path="particle_trajectory_analysis.png"
+    # )
+
     initial_state = {
         "mass": 9.1093837015e-31,  # electron mass in kg
         "charge": -1.602176634e-19,  # electron charge in C
