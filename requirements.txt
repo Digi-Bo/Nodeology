@@ -4,7 +4,7 @@ typing-extensions
 numpy
 plotly
 kaleido
-langgraph
+langgraph<=0.2.45
 litellm>=1.0.0
 langfuse>=2.0.0
 chainlit>=2.0.0
